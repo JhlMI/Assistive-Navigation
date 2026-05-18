@@ -1,0 +1,46 @@
+# ── Pesos de modelos (muy pesados) ───────────────────────────────────────────
+*.pt
+*.pth
+*.onnx
+*.engine
+*.trt
+*.bin
+*.safetensors
+
+# ── Salidas generadas ─────────────────────────────────────────────────────────
+output/
+logs/
+
+# ── Data (videos e imágenes) ──────────────────────────────────────────────────
+data/videos/
+data/imagenes/
+
+# ── Entornos Python ───────────────────────────────────────────────────────────
+venv/
+env/
+yolo_env/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.ipynb_checkpoints/
+
+# ── HuggingFace cache ─────────────────────────────────────────────────────────
+.cache/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.jupyter/
+
+# ── Sistema ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+
+# ── CUDA / TensorRT ───────────────────────────────────────────────────────────
+*.cubin
+*.fatbin
+
+# ── VS Code ───────────────────────────────────────────────────────────────────
+.vscode/
