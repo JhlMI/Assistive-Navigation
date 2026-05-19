@@ -1,0 +1,25 @@
+# RESUMEN YOLOv8n
+# Fuente,data\videos\acera_test_15fps.mp4
+# Frames,554
+# Fecha,2026-05-18 05:13:40
+# os,Windows 10
+# python,3.10.20
+# cpu,"Intel64 Family 6 Model 151 Stepping 2, GenuineIntel"
+# ram_total_gb,34.1
+# gpu,NVIDIA GeForce RTX 3070 Ti
+# gpu_vram_gb,8.6
+# cuda,11.8
+# pytorch,2.6.0+cu118
+
+# CRITERIOS DE VALIDACIÓN
+# Lat <300ms,CUMPLE,9.7ms
+# FPS >=15,CUMPLE,124.3
+# Estab <20%,NO CUMPLE,std=36.0ms (369.4%)
+
+metrica,media,std,min,max,p50,p95
+latencia_ms,9.73,35.95,6.19,854.6,7.92,10.78
+fps_instantaneo,124.29,17.78,1.17,161.61,126.14,149.33
+ram_gb,20.32,0.04,19.9,20.36,20.33,20.35
+gpu_mb,2290.54,13.02,2032.3,2315.3,2289.8,2315.0
+cpu_pct,12.98,15.35,1.0,100.0,9.4,32.85
+obstaculos_detectados,6.0,1.47,3.0,11.0,6.0,9.0

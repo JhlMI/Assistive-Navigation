@@ -1,0 +1,2 @@
+frame_id,latencia_ms,fps_instantaneo,ram_gb,gpu_mb,cpu_pct,clases_detectadas,pct_sidewalk,pct_road,pct_person
+1,193.88,5.16,17.34,2071.4,5.9,12,16.21,19.33,0.12

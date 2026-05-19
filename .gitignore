@@ -6,9 +6,9 @@
 *.trt
 *.bin
 *.safetensors
-
+*.mp4
 # ── Salidas generadas ─────────────────────────────────────────────────────────
-output/
+output_jetson/
 logs/
 
 # ── Data (videos e imágenes) ──────────────────────────────────────────────────

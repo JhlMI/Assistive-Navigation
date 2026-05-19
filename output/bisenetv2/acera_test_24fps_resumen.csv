@@ -1,0 +1,29 @@
+# RESUMEN BiSeNetV2
+# Fuente,data\videos\acera_test_24fps.mp4
+# Frames,7200
+# Fecha,2026-05-18 00:34:17
+# os,Windows 10
+# python,3.10.20
+# cpu,"Intel64 Family 6 Model 151 Stepping 2, GenuineIntel"
+# ram_total_gb,34.1
+# gpu,NVIDIA GeForce RTX 3070 Ti
+# gpu_vram_gb,8.6
+# cuda,11.8
+# pytorch,2.6.0+cu118
+# modelo_hf,nvidia/segformer-b2-finetuned-cityscapes-1024-1024
+
+# CRITERIOS DE VALIDACIÓN
+# Lat <300ms,CUMPLE,29.6ms
+# FPS >=15,CUMPLE,34.8
+# Estab <20%,CUMPLE,std=5.7ms (19.1%)
+
+metrica,media,std,min,max,p50,p95
+latencia_ms,29.58,5.66,21.47,173.29,28.37,39.9
+fps_instantaneo,34.84,5.71,5.77,46.57,35.24,44.24
+ram_gb,21.25,0.41,20.69,22.13,21.09,21.92
+gpu_mb,3149.15,83.03,2409.9,3310.0,3161.45,3271.01
+cpu_pct,11.75,6.29,1.5,100.0,10.3,23.6
+clases_detectadas,9.26,2.35,4.0,17.0,9.0,14.0
+pct_sidewalk,3.07,5.18,0.0,28.85,0.89,14.34
+pct_road,11.29,8.3,0.0,36.32,10.7,25.39
+pct_person,10.95,14.73,0.0,62.04,3.39,45.47
