@@ -1,0 +1,40 @@
+{
+  "modelo_base": "nvidia/segformer-b0-finetuned-cityscapes-1024-1024",
+  "input_size": {
+    "height": 512,
+    "width": 896
+  },
+  "id2label": {
+    "0": "background",
+    "1": "building",
+    "2": "pole",
+    "3": "road",
+    "4": "sidewalk",
+    "5": "vegetation"
+  },
+  "mapeo_pixel_roboflow_a_clase": {
+    "0": 0,
+    "1": 0,
+    "2": 1,
+    "3": 2,
+    "4": 3,
+    "5": 4,
+    "6": 5
+  },
+  "epocas": 50,
+  "learning_rate": 6e-05,
+  "batch_size": 8,
+  "seed": 42,
+  "gpu": "NVIDIA L4",
+  "tiempo_entrenamiento_min": 19.8,
+  "mejor_miou_valid": 0.7207,
+  "miou_test": 0.737,
+  "iou_test_por_clase": {
+    "background": 0.536,
+    "building": 0.8321,
+    "pole": 0.5415,
+    "road": 0.9101,
+    "sidewalk": 0.9136,
+    "vegetation": 0.6886
+  }
+}
