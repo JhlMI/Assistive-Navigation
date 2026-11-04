@@ -63,47 +63,9 @@ NOMBRE_MODELO = "DeepLabV3+MobileNetV3"
 
 # ── Monitor ───────────────────────────────────────────────────────────────────
 
-class Monitor:
-    def __init__(self):
-        if PSUTIL_OK: psutil.cpu_percent()
-        if NVML_OK:
-            self.h = pynvml.nvmlDeviceGetHandleByIndex(0)
-            mem = pynvml.nvmlDeviceGetMemoryInfo(self.h)
-            self.gpu_nombre   = pynvml.nvmlDeviceGetName(self.h)
-            self.gpu_total_mb = mem.total / 1e6
-        else:
-            self.h = None
-            self.gpu_nombre   = "GPU"
-            self.gpu_total_mb = 0
-
-    def leer(self):
-        cpu    = psutil.cpu_percent() if PSUTIL_OK else 0
-        ram_gb = psutil.virtual_memory().used / 1e9 if PSUTIL_OK else 0
-        if NVML_OK and self.h:
-            mem  = pynvml.nvmlDeviceGetMemoryInfo(self.h)
-            util = pynvml.nvmlDeviceGetUtilizationRates(self.h)
-            vram_mb, gpu_pct = mem.used/1e6, util.gpu
-        else:
-            vram_mb, gpu_pct = 0, 0
-        return {"ram_gb":round(ram_gb,2),"cpu_pct":cpu,
-                "gpu_mb":round(vram_mb,1),"gpu_pct":gpu_pct}
-
-    def info_sistema(self):
-        vm = psutil.virtual_memory() if PSUTIL_OK else None
-        return {
-            "os": platform.system()+" "+platform.release(),
-            "python": platform.python_version(),
-            "cpu": platform.processor() or platform.machine(),
-            "ram_total_gb": round(vm.total/1e9,1) if vm else 0,
-            "gpu": self.gpu_nombre,
-            "gpu_vram_gb": round(self.gpu_total_mb/1e3,1),
-            "cuda": torch.version.cuda,
-            "pytorch": torch.__version__,
-            "modelo_hf": MODELO_HF,
-        }
-
-
-# ── Cargar modelo ─────────────────────────────────────────────────────────────
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent))
+from monitor import Monitor
 
 def cargar_modelo():
     """
@@ -123,7 +85,7 @@ def cargar_modelo():
 
     print(f"  Cargando: {MODELO_HF}  (~180MB primera vez)")
     proc   = SegformerImageProcessor.from_pretrained(MODELO_HF)
-    modelo = SegformerForSemanticSegmentation.from_pretrained(MODELO_HF)
+    modelo = SegformerForSemanticSegmentation.from_pretrained(MODELO_HF, use_safetensors=True)
     modelo.eval().to(DEVICE)
     return modelo, proc
 
@@ -262,7 +224,7 @@ def guardar_resumen(regs, ruta, info_sys, fuente_nombre):
         w.writerow([])
         w.writerow(["metrica","media","std","min","max","p50","p95"])
         for m in ["latencia_ms","fps_instantaneo","ram_gb","gpu_mb",
-                  "cpu_pct","clases_detectadas","pct_sidewalk","pct_road","pct_person"]:
+                  "cpu_pct","power_w","clases_detectadas","pct_sidewalk","pct_road","pct_person"]:
             w.writerow([m]+st(m))
     print(f"  CSV resumen : {ruta}")
 
@@ -294,7 +256,7 @@ def imprimir_resumen(regs, nombre):
 
 # ── Modos de entrada ──────────────────────────────────────────────────────────
 
-def procesar_imagen(modelo,proc,ruta,monitor):
+def procesar_imagen(modelo,proc,ruta,monitor,headless=args.no_display):
     frame=cv2.imread(str(ruta))
     if frame is None: print(f"  [!] {ruta}"); return
     rec=monitor.leer(); m,lat_ms=inferir(modelo,proc,frame)
@@ -306,7 +268,7 @@ def procesar_imagen(modelo,proc,ruta,monitor):
     guardar_raw(reg,OUTPUT_DIR/f"{ruta.stem}_raw.csv")
     guardar_resumen(reg,OUTPUT_DIR/f"{ruta.stem}_resumen.csv",monitor.info_sistema(),ruta.name)
 
-def procesar_carpeta(modelo,proc,ruta,monitor):
+def procesar_carpeta(modelo,proc,ruta,monitor,headless=args.no_display):
     exts={".jpg",".jpeg",".png",".bmp",".webp"}
     imgs=sorted([p for p in ruta.iterdir() if p.suffix.lower() in exts])
     if not imgs: print(f"  [!] Sin imágenes en {ruta}"); return
@@ -321,12 +283,12 @@ def procesar_carpeta(modelo,proc,ruta,monitor):
         cv2.imwrite(str(OUTPUT_DIR/ip.name),fusion)
         cv2.imshow(NOMBRE_MODELO,panel)
         if cv2.waitKey(1)&0xFF in (ord("q"),27): break
-    cv2.destroyAllWindows()
+    if not headless: cv2.destroyAllWindows()
     guardar_raw(regs,OUTPUT_DIR/f"{ruta.name}_raw.csv")
     guardar_resumen(regs,OUTPUT_DIR/f"{ruta.name}_resumen.csv",monitor.info_sistema(),str(ruta))
     imprimir_resumen(regs,ruta.name)
 
-def procesar_video(modelo,proc,fuente,monitor):
+def procesar_video(modelo,proc,fuente,monitor,headless=args.no_display):
     cap=cv2.VideoCapture(fuente)
     if not cap.isOpened(): print(f"  [!] {fuente}"); return
     W=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -352,8 +314,8 @@ def procesar_video(modelo,proc,fuente,monitor):
                 sw=regs[-1].get("pct_sidewalk",0)
                 print(f"  Frame {n:>5}  lat={lat_ms:5.1f}ms  FPS={fps_r:.1f}"
                       f"  sidewalk={sw:.1f}%  VRAM={rec['gpu_mb']:.0f}MB  GPU={rec['gpu_pct']:.0f}%")
-            cv2.imshow(NOMBRE_MODELO,panel)
-        key=cv2.waitKey(1)&0xFF
+            if not headless: cv2.imshow(NOMBRE_MODELO,panel)
+        key=(cv2.waitKey(1)&0xFF) if not headless else 255
         if key in (ord("q"),27): break
         elif key==ord(" "):
             pausado=not pausado
@@ -361,7 +323,8 @@ def procesar_video(modelo,proc,fuente,monitor):
         elif key==ord("s") and vis is not None:
             scap+=1; p=OUTPUT_DIR/f"{nom}_captura_{scap:03d}.jpg"
             cv2.imwrite(str(p),vis); print(f"  📸 {p}")
-    cap.release(); writer.release(); cv2.destroyAllWindows()
+    cap.release(); writer.release()
+    if not headless: cv2.destroyAllWindows()
     guardar_raw(regs,OUTPUT_DIR/f"{nom}_raw.csv")
     guardar_resumen(regs,OUTPUT_DIR/f"{nom}_resumen.csv",monitor.info_sistema(),str(fuente))
     imprimir_resumen(regs,nom)
@@ -374,6 +337,7 @@ def main():
     global ALFA_SEG
     parser=argparse.ArgumentParser(description=f"{NOMBRE_MODELO} — Cityscapes")
     parser.add_argument("--fuente",required=True)
+    parser.add_argument("--no-display",action="store_true",help="Headless")
     parser.add_argument("--alfa",type=float,default=ALFA_SEG)
     args=parser.parse_args()
     ALFA_SEG=args.alfa
@@ -397,15 +361,15 @@ def main():
 
     fuente=args.fuente
     try:
-        fuente=int(fuente); procesar_video(modelo,proc,fuente,monitor); return
+        fuente=int(fuente); procesar_video(modelo,proc,fuente,monitor,headless=args.no_display); return
     except ValueError: pass
 
     ruta=Path(fuente)
     if not ruta.exists(): print(f"  [!] No existe: {ruta}"); sys.exit(1)
-    if ruta.is_dir(): procesar_carpeta(modelo,proc,ruta,monitor)
+    if ruta.is_dir(): procesar_carpeta(modelo,proc,ruta,monitor,headless=args.no_display)
     elif ruta.suffix.lower() in {".mp4",".avi",".mov",".mkv",".webm"}:
-        procesar_video(modelo,proc,str(ruta),monitor)
-    else: procesar_imagen(modelo,proc,ruta,monitor)
+        procesar_video(modelo,proc,str(ruta),monitor,headless=args.no_display)
+    else: procesar_imagen(modelo,proc,ruta,monitor,headless=args.no_display)
 
 if __name__=="__main__":
     main()
