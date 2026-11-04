@@ -44,3 +44,10 @@ desktop.ini
 
 # ── VS Code ───────────────────────────────────────────────────────────────────
 .vscode/
+# ── Dataset, videos and archives ──
+data/
+*.avi
+*.zip
+
+# ── Pico firmware build ──
+harness_pico/build/
