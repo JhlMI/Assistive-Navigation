@@ -1,0 +1,31 @@
+# RESUMEN SegFormer-B0
+# Fuente,data/videos/acera_test_15fps.mp4
+# Frames,4500
+# Fecha,2026-05-18 06:39:23
+# os,Linux 5.15.148-tegra
+# plataforma,Jetson
+# python,3.10.12
+# cpu,aarch64
+# ram_total_gb,8.0
+# gpu,Jetson Orin Nano
+# gpu_vram_gb,8.2
+# cuda,12.6
+# pytorch,2.5.0a0+872d972e41.nv24.08
+
+# CRITERIOS DE VALIDACIÓN
+# Lat <300ms,CUMPLE,40.3ms
+# FPS >=15,CUMPLE,24.8
+# Estab <20%,CUMPLE,std=3.9ms (9.7%)
+
+metrica,media,std,min,max,p50,p95
+latencia_ms,40.33,3.89,40.14,301.52,40.25,40.4
+fps_instantaneo,24.83,0.32,3.32,24.91,24.85,24.88
+ram_gb,2.9,0.04,2.64,3.0,2.87,2.99
+gpu_mb,2965.14,45.99,2699.9,3074.5,2939.2,3059.6
+cpu_pct,19.31,1.83,10.2,39.2,19.0,23.0
+power_w,10.13,0.27,7.34,10.74,10.13,10.55
+temp_c,58.2,0.34,57.4,59.6,58.2,58.9
+clases_detectadas,9.98,2.7,3.0,17.0,10.0,15.0
+pct_sidewalk,3.22,5.14,0.0,28.47,1.21,14.61
+pct_road,10.27,8.08,0.0,36.52,9.02,25.9
+pct_person,10.66,14.65,0.0,62.55,3.55,46.07

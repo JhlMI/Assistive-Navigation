@@ -1,0 +1,28 @@
+# RESUMEN YOLO26n
+# Fuente,data/videos/acera_test_15fps.mp4
+# Frames,4500
+# Fecha,2026-05-18 06:02:12
+# os,Linux 5.15.148-tegra
+# plataforma,Jetson
+# python,3.10.12
+# cpu,aarch64
+# ram_total_gb,8.0
+# gpu,Jetson Orin Nano
+# gpu_vram_gb,8.2
+# cuda,12.6
+# pytorch,2.5.0a0+872d972e41.nv24.08
+
+# CRITERIOS DE VALIDACIÓN
+# Lat <300ms,CUMPLE,30.1ms
+# FPS >=15,CUMPLE,33.5
+# Estab <20%,NO CUMPLE,std=13.7ms (45.7%)
+
+metrica,media,std,min,max,p50,p95
+latencia_ms,30.06,13.73,29.09,951.04,29.89,30.27
+fps_instantaneo,33.49,0.61,1.05,34.38,33.46,34.0
+ram_gb,2.4,0.03,1.72,2.47,2.39,2.46
+gpu_mb,2453.17,29.93,1762.5,2531.4,2448.3,2519.7
+cpu_pct,21.25,3.35,12.9,50.0,20.6,28.1
+power_w,9.67,0.13,8.23,9.99,9.71,9.79
+temp_c,56.06,1.08,52.9,57.4,56.3,57.3
+obstaculos_detectados,5.07,2.11,0.0,13.0,5.0,9.0
