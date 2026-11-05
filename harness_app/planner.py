@@ -36,11 +36,13 @@ class PlanResult:
     path: list = field(default_factory=list)          # [(x, y)] meters
     path_px: list = field(default_factory=list)       # same path in image pixels (full res)
     look: tuple = None                                # look-ahead point (x, y)
-    obstacles_ground: list = field(default_factory=list)   # [(x, y, radius, label)]
+    obstacles_ground: list = field(default_factory=list)   # [(x_left, x_right, y_front, label)] meters
     obstacles: list = field(default_factory=list)     # detector boxes that block the path
     obst_dist: float = None         # distance along the path to the first blocking obstacle
     path_len: float = 0.0           # how far the path reaches (m from the feet)
     grid: np.ndarray = None         # 0 unknown, 1 walkable, 2 not walkable, 3 obstacle
+    stop_zone: list = None          # STOP zone outline [(x, y)] meters
+    stop_zone_px: list = None       # same outline in image pixels (full res)
 
 
 class BevPlanner:
@@ -97,11 +99,13 @@ class BevPlanner:
                 gy = self.y_start
             else:
                 gx, gy = bev.image_to_ground(self.H, (x1 + x2) / 2, v)
+            # Ground footprint = the box's bottom edge projected on the floor (left and right ends).
+            # The bottom edge is the part touching the ground (feet, wheels), i.e. the closest part.
             xl, _ = bev.image_to_ground(self.H, x1, v)
             xr, _ = bev.image_to_ground(self.H, x2, v)
-            radius = float(np.clip(abs(xr - xl) / 2, 0.2, 1.2))
+            xl, xr = min(xl, xr), max(xl, xr)
             if 0 < gy < bev.GRID_Y[1] + 1:
-                out.append((gx, gy, radius, C.OBSTACLE_CLASSES[cls], (x1, y1, x2, y2, score, cls)))
+                out.append((xl, xr, gy, C.OBSTACLE_CLASSES[cls], (x1, y1, x2, y2, score, cls)))
         return out
 
     def _pole_obstacles(self, seg_mask):
@@ -123,7 +127,7 @@ class BevPlanner:
                 continue                                     # foot not visible: cannot place it
             gx, gy = bev.image_to_ground(self.H, u, v)
             if 0 < gy < bev.GRID_Y[1]:
-                out.append((gx, gy, C.POLE_RADIUS, "pole", None))
+                out.append((gx - C.POLE_RADIUS, gx + C.POLE_RADIUS, gy - C.POLE_RADIUS, "pole", None))
         return out
 
     # ---- main step -----------------------------------------------------------
@@ -141,10 +145,11 @@ class BevPlanner:
         # 2. Obstacles
         obstacles = self._box_obstacles(boxes) + self._pole_obstacles(seg_mask)
         occ = np.zeros((self.gh, self.gw), np.uint8)
-        for (gx, gy, rad, label, _) in obstacles:
-            c, rw = self.ground_to_cell(gx, gy)
-            cv2.circle(occ, (c, rw), max(1, int(round(rad / res))), 1, -1)
-        r.obstacles_ground = [(gx, gy, rad, label) for (gx, gy, rad, label, _) in obstacles]
+        for (xl, xr, yf, label, _) in obstacles:
+            c1, r1 = self.ground_to_cell(xl, yf + C.OBST_DEPTH)          # far-left corner
+            c2, r2 = self.ground_to_cell(xr, yf)                         # near-right corner
+            cv2.rectangle(occ, (c1, r1), (c2, r2), 1, -1)
+        r.obstacles_ground = [(xl, xr, yf, label) for (xl, xr, yf, label, _) in obstacles]
 
         # 3. Clearance: distance to non-walkable visible cells or obstacles
         #    (cells outside the field of view do not repel: they are unknown, not blocked)
@@ -199,22 +204,42 @@ class BevPlanner:
             r.path_px = [self.ground_to_px(x, y) for x, y in r.path]
             r.path_len = r.path[-1][1]
 
-        # 5. Obstacles on the path
+        # 5. STOP zone: which obstacles count as "in front of the user"
+        #    bubble:   half-ellipse in front of the body, centered on the body axis at the blind-zone edge:
+        #              BUBBLE_DEPTH forward, BUBBLE_HALF_WIDTH to each side (fixed to the body, not the path)
+        #    corridor: the path center +- (body half width + margin), within STOP_RANGE
         r.obst_dist = None
-        for (gx, gy, rad, label, box) in obstacles:
-            if not r.path:
-                break
-            lat = rad + C.BODY_HALF_WIDTH + C.OBST_MARGIN        # body + safety margin on each side
-            near = [y for (x, y) in r.path if abs(y - gy) <= rad + 0.1 and abs(x - gx) <= lat]
-            if near or (abs(gx) <= lat and gy <= r.path_len + 0.3):
-                d = gy - rad
-                if r.obst_dist is None or d < r.obst_dist:
-                    r.obst_dist = d
-                if box is not None and d < self.stop_y:
+        half = C.BODY_HALF_WIDTH + C.OBST_MARGIN
+        for (xl, xr, yf, label, box) in obstacles:
+            if C.STOP_ZONE == "bubble":
+                dx = 0.0 if xl <= 0.0 <= xr else min(abs(xl), abs(xr))   # closest point of the footprint
+                dy = max(0.0, yf - self.y_start)
+                inside = (dx / C.BUBBLE_HALF_WIDTH) ** 2 + (dy / C.BUBBLE_DEPTH) ** 2 <= 1.0
+            else:
+                if not r.path or yf > r.path_len + 0.3 or yf >= self.stop_y:
+                    continue
+                xp = min(r.path, key=lambda p: abs(p[1] - yf))[0]   # path center at that distance
+                inside = xr >= xp - half and xl <= xp + half
+            if inside:
+                if r.obst_dist is None or yf < r.obst_dist:
+                    r.obst_dist = yf
+                if box is not None:
                     r.obstacles.append(box)
 
+        # Zone outline (ground meters) for the BEV panel and the camera overlay
+        if C.STOP_ZONE == "bubble":
+            a = np.linspace(0, np.pi, 25)
+            r.stop_zone = [(C.BUBBLE_HALF_WIDTH * np.cos(t), self.y_start + C.BUBBLE_DEPTH * np.sin(t)) for t in a]
+        elif r.path:
+            xs0 = [x for (x, y) in r.path if y <= self.stop_y] or [r.path[0][0]]
+            xc = float(np.mean(xs0))
+            r.stop_zone = [(xc - half, self.y_start), (xc - half, self.stop_y),
+                           (xc + half, self.stop_y), (xc + half, self.y_start)]
+        if r.stop_zone:
+            r.stop_zone_px = [self.ground_to_px(x, y) for (x, y) in r.stop_zone]
+
         # 6. Decision
-        if r.obst_dist is not None and r.obst_dist < self.stop_y:
+        if r.obst_dist is not None:                        # something inside the STOP zone
             self.block_frames += 1
             self.clear_frames = 0
         else:
@@ -290,8 +315,11 @@ def render_grid(res, height=360):
         cv2.line(img, (0, py), (img.shape[1], py), (90, 90, 90), 1)
         cv2.putText(img, f"{y}m", (2, py - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1, cv2.LINE_AA)
     cv2.line(img, to_px(0, 0), to_px(0, bev.GRID_Y[1]), (120, 120, 120), 1)
-    for (x, y, rad, label) in res.obstacles_ground:
-        cv2.circle(img, to_px(x, y), max(2, int(rad / bev.GRID_RES * scale)), (0, 0, 255), 2)
+    for (xl, xr, yf, label) in res.obstacles_ground:
+        cv2.rectangle(img, to_px(xl, yf + C.OBST_DEPTH), to_px(xr, yf), (0, 0, 255), 2)
+    if res.stop_zone:                                               # STOP zone outline (orange)
+        pts = np.array([to_px(x, y) for x, y in res.stop_zone], np.int32)
+        cv2.polylines(img, [pts], C.STOP_ZONE != "bubble", (0, 165, 255), 2)
     if len(res.path) >= 2:
         pts = np.array([to_px(x, y) for x, y in res.path], np.int32)
         cv2.polylines(img, [pts], False, (0, 230, 255), 2)

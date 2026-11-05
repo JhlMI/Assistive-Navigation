@@ -74,6 +74,9 @@ def annotate(frame, walkable, boxes, res, size=None):
                 cx = int(res.center_x * W / walkable.shape[1])
                 cv2.line(img, (cx, y_roi), (cx, H), (0, 255, 255), 2)
 
+    if bev_mode and getattr(res, "stop_zone_px", None):           # STOP zone projected on the camera image
+        zp = np.array([(int(u * sx), int(v * sy)) for u, v in res.stop_zone_px], np.int32)
+        cv2.polylines(img, [zp], False, (0, 165, 255), 2, cv2.LINE_AA)
     if bev_mode:
         pts = [(int(u * sx), int(v * sy)) for u, v in res.path_px if 0 <= v < frame.shape[0] * 1.2]
         if len(pts) >= 2:
