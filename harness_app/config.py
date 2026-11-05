@@ -28,16 +28,17 @@ BODY_HALF_WIDTH = 0.30             # minimum clearance from edges/obstacles for 
 CLEAR_CAP = 0.80                   # clearance above this counts as "safe enough" (path takes the middle)
 POLE_MIN_AREA = 40                 # px (model resolution) for a pole blob to count
 POLE_RADIUS = 0.15
-PATH_MAX_Y = 5.5                   # how far the path is traced
+PATH_MAX_Y = 4.0                   # how far the path is traced (slow walking: far range adds noise, not info)
 PATH_MAX_STEP = 0.10               # max lateral shift of the path per 5 cm row
 PATH_GAP_TOL = 0.30                # allowed gap in the path before it ends
 START_SEARCH = 0.60                # search for walkable cells this far left/right of the body
-PATH_POLY_DEG = 3                  # degree of the polynomial fitted to the path center line
-LOOKAHEAD_Y = 2.5                  # look-ahead point (m from the feet)
+PATH_POLY_DEG = 1                  # path center line fit: 1 = straight line (stable heading), 2 = gentle curve
+LOOKAHEAD_Y = 2.0                  # look-ahead point (m from the feet)
 ANGLE_EMA = 0.4
 ANGLE_ENTER = 10.0                 # deg to start correcting
 ANGLE_EXIT = 5.0                   # deg to go back to forward
-STOP_DIST = 2.5                    # obstacle on the path closer than this -> stop (m from the feet)
+STOP_RANGE = 1.5                   # obstacle within this distance beyond the blind zone -> stop (m)
+OBST_MARGIN = 0.50                 # extra lateral margin around the path to count an obstacle as blocking (m)
 MIN_PATH_LEN = 0.8                 # path shorter than this beyond the blind zone -> "no path"
 
 # ---- Direction decision (centroid mode) -------------------------------------
@@ -76,6 +77,7 @@ WEB_FPS = 8
 WEB_WIDTH, WEB_HEIGHT = 640, 360
 CLEAN_FPS = 20                     # /clean: raw video for the person wearing the harness (demos)
 CLEAN_WIDTH = 1280
+REC_CODEC = "mp4v"                 # raw recording: "mp4v" (~7-15 MB/min) or "mjpg" (~40-75 MB/min, max fidelity)
 REC_ANNOTATED = False              # True: the Recording button also saves ann_*.avi (overlays, evidence)
 REC_ANNOTATED_SIZE = (960, 540)    # camera part of the annotated video (the BEV panel is added beside it)
 REC_ANNOTATED_FPS = 15

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Demo: replays a street video in a loop; the models and the motors run live.
 # Usage: ~/demo.sh [video.avi] [real_fps for videos recorded before v6_demo]
-VIDEO=${1:-$(ls -t ~/Assistive-Navigation/logs/navigation/rec_*.avi | head -1)}
+VIDEO=${1:-$(ls -t ~/Assistive-Navigation/logs/navigation/rec_*.* | head -1)}
 FPS_ARG=""
 [ -n "$2" ] && FPS_ARG="--video-fps $2"
 sudo nvpmodel -m 0

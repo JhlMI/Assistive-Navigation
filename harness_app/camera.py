@@ -52,6 +52,10 @@ class OakCamera(_SourceBase):
         self._focus = focus
         self._focus_range = focus_range
         self.lens_position = None
+        self.cam_fps = None            # frames per second actually delivered by the camera
+        self.exposure_ms = None        # auto-exposure time of the last frame (long in low light -> fewer FPS)
+        self.iso = None
+        self._t_last = None
         self._t_clamp = 0.0
         self._pipeline = dai.Pipeline()
         cam = self._pipeline.create(dai.node.ColorCamera)
@@ -87,6 +91,16 @@ class OakCamera(_SourceBase):
                 time.sleep(0.002)
                 continue
             self.lens_position = msg.getLensPosition()
+            try:
+                self.exposure_ms = msg.getExposureTime().total_seconds() * 1000.0
+                self.iso = msg.getSensitivity()
+            except Exception:
+                pass
+            now = time.perf_counter()
+            if self._t_last is not None:
+                inst = 1.0 / max(1e-6, now - self._t_last)
+                self.cam_fps = inst if self.cam_fps is None else 0.9 * self.cam_fps + 0.1 * inst
+            self._t_last = now
             self._clamp_focus()
             self._publish(msg.getCvFrame())
         self._running = False

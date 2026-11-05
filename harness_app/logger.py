@@ -7,9 +7,9 @@ from pathlib import Path
 
 import config as C
 
-FIELDS = ["t_s", "fps", "lat_ms", "seg_ms", "det_ms", "command", "reason", "error",
+FIELDS = ["t_s", "fps", "lat_ms", "seg_ms", "det_ms", "plan_ms", "command", "reason", "error",
           "sidewalk_frac", "n_boxes", "n_obst", "angle_deg", "path_len", "obst_dist", "v_ina", "i_ina", "p_ina", "v_bat_adc",
-          "v_jet", "pico_mode", "tj_c"]
+          "v_jet", "pico_mode", "tj_c", "cam_fps", "exp_ms", "iso", "rec", "web_clients"]
 
 
 def _tj_path():

@@ -35,6 +35,7 @@ class SharedState:
         self.recording = False        # toggled from the web page (main loop opens/closes the file)
         self.rec_info = None          # name of the current recording, set by the main loop
         self.snapshots = 0
+        self.web_clients = 0          # browsers currently receiving /video (they cost CPU)
 
     def update(self, frame, walkable, boxes, result, data):
         with self.lock:
@@ -195,6 +196,7 @@ def start_server(state):
                 self.end_headers()
                 period = 1.0 / (C.CLEAN_FPS if clean else C.WEB_FPS)
                 last = None
+                state.web_clients += 1
                 try:
                     while True:
                         t = time.monotonic()
@@ -213,6 +215,8 @@ def start_server(state):
                         time.sleep(max(0.0, period - (time.monotonic() - t)))
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+                finally:
+                    state.web_clients -= 1
             else:
                 self.send_error(404)
 

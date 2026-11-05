@@ -61,6 +61,8 @@ class BevPlanner:
         rows = np.where(self.visible[:, self.col0])[0]
         self.row_start = int(rows.max()) if len(rows) else self.gh - 1
         self.y_start = self.row_to_y(self.row_start)
+        # Stop zone: the first STOP_RANGE meters the camera sees (beyond the blind zone)
+        self.stop_y = self.y_start + C.STOP_RANGE
         # Decision state
         self.angle_ema = 0.0
         self.direction = "F"
@@ -191,7 +193,7 @@ class BevPlanner:
             # Smooth the center line: low-order polynomial x(y) (steering needs a smooth curve)
             ys_m = np.array([self.row_to_y(rw) for rw in rows])
             xs_m = np.array([self.col_to_x(c) for c in cols])
-            deg = 1 if len(cols) < 10 else (2 if len(cols) < 30 else C.PATH_POLY_DEG)
+            deg = min(C.PATH_POLY_DEG, 1 if len(cols) < 10 else (2 if len(cols) < 30 else 3))
             xs_fit = np.polyval(np.polyfit(ys_m, xs_m, deg), ys_m)
             r.path = list(zip(xs_fit.tolist(), ys_m.tolist()))
             r.path_px = [self.ground_to_px(x, y) for x, y in r.path]
@@ -202,16 +204,17 @@ class BevPlanner:
         for (gx, gy, rad, label, box) in obstacles:
             if not r.path:
                 break
-            near = [y for (x, y) in r.path if abs(y - gy) <= rad + 0.1 and abs(x - gx) <= rad + C.BODY_HALF_WIDTH]
-            if near or (abs(gx) <= rad + C.BODY_HALF_WIDTH and gy <= r.path_len + 0.3):
+            lat = rad + C.BODY_HALF_WIDTH + C.OBST_MARGIN        # body + safety margin on each side
+            near = [y for (x, y) in r.path if abs(y - gy) <= rad + 0.1 and abs(x - gx) <= lat]
+            if near or (abs(gx) <= lat and gy <= r.path_len + 0.3):
                 d = gy - rad
                 if r.obst_dist is None or d < r.obst_dist:
                     r.obst_dist = d
-                if box is not None and d < C.STOP_DIST:
+                if box is not None and d < self.stop_y:
                     r.obstacles.append(box)
 
         # 6. Decision
-        if r.obst_dist is not None and r.obst_dist < C.STOP_DIST:
+        if r.obst_dist is not None and r.obst_dist < self.stop_y:
             self.block_frames += 1
             self.clear_frames = 0
         else:

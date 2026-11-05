@@ -147,10 +147,12 @@ def main():
             if not guidance_was_on:
                 decider = make_decider()     # start fresh: no stale smoothing from before
             walkable, boxes, times = perception.process(frame)
+            t_plan = time.perf_counter()
             if use_bev:
                 res = decider.update(walkable, boxes, frame.shape, perception.last_mask)
             else:
                 res = decider.update(walkable, boxes, frame.shape)
+            times["plan_ms"] = (time.perf_counter() - t_plan) * 1000
         else:                                # camera only: no inference, motors silent
             walkable, boxes, times = None, [], {"seg_ms": 0.0, "det_ms": 0.0}
             res = Result(command="S", reason="guidance off")
@@ -180,12 +182,18 @@ def main():
 
         row = {"fps": round(fps, 1), "lat_ms": round(lat_ms, 1),
                "seg_ms": round(times["seg_ms"], 1), "det_ms": round(times["det_ms"], 1),
+               "plan_ms": round(times.get("plan_ms", 0.0), 1),
                "command": res.command, "reason": res.reason, "error": round(res.error, 3),
                "sidewalk_frac": round(res.sidewalk_frac, 3), "n_boxes": len(boxes),
                "n_obst": len(res.obstacles), "angle_deg": round(getattr(res, "angle_deg", 0.0), 1),
                "path_len": round(getattr(res, "path_len", 0.0), 2),
                "obst_dist": None if getattr(res, "obst_dist", None) is None else round(res.obst_dist, 2),
                **tel}
+        row.update({"cam_fps": round(source.cam_fps, 1) if getattr(source, "cam_fps", None) else None,
+                    "exp_ms": round(source.exposure_ms, 1) if getattr(source, "exposure_ms", None) else None,
+                    "iso": getattr(source, "iso", None),
+                    "rec": int(recorder is not None),
+                    "web_clients": state.web_clients if state is not None else 0})
         log.write(row)
 
         # Annotated recording: only frames processed with guidance ON
@@ -209,6 +217,7 @@ def main():
                     "focus": getattr(source, "lens_position", None),
                     "usb": getattr(source, "usb_speed", None),
                     "pico": "connected" if pico else "no",
+                    "cam_fps": row["cam_fps"], "exposure_ms": row["exp_ms"], "web_clients": row["web_clients"],
                     "guidance": "ON" if guidance else "OFF",
                     "recording": state.rec_info, "photos": state.snapshots, "warning": warning}
             state.update(frame, walkable, boxes, res, data)

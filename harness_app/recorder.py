@@ -19,13 +19,25 @@ import cv2
 import config as C
 
 
+def open_writer(stem, fps, size, codec):
+    """codec 'mp4v' (MPEG-4, ~5x smaller, less CPU) or 'mjpg' (one JPEG per frame).
+    Falls back to MJPG if this OpenCV build cannot write MPEG-4. Returns (writer, path)."""
+    if codec == "mp4v":
+        path = C.LOG_DIR / f"{stem}.mp4"
+        w = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+        if w.isOpened():
+            return w, path
+        print("MPEG-4 writer not available: recording as MJPG")
+    path = C.LOG_DIR / f"{stem}.avi"
+    return cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size), path
+
+
 class Recorder:
     def __init__(self, fps=15, size=(960, 540)):
         C.LOG_DIR.mkdir(parents=True, exist_ok=True)
-        self.path = C.LOG_DIR / f"rec_{datetime.now():%Y%m%d_%H%M%S}.avi"
         self.size = size
         self.fps = fps
-        self._writer = cv2.VideoWriter(str(self.path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size)
+        self._writer, self.path = open_writer(f"rec_{datetime.now():%Y%m%d_%H%M%S}", fps, size, C.REC_CODEC)
         self._queue = queue.Queue(maxsize=8)
         self.dropped = 0
         self.frames = 0
