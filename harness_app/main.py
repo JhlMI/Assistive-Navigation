@@ -11,6 +11,7 @@ Usage:
     python main.py --no-web              # without the web view (saves CPU)
     python main.py --record              # start recording right away (also from the web button)
     python main.py --video rec_X.avi --loop   # demo: replay a street video forever, motors respond live
+    python main.py --no-gps              # without the GPS module
 """
 import argparse
 import os
@@ -37,6 +38,7 @@ def main():
     ap.add_argument("--port", help="Pico serial port (default /dev/ttyACM*)")
     ap.add_argument("--record", action="store_true", help="save the camera video for later replay")
     ap.add_argument("--loop", action="store_true", help="with --video: restart the video when it ends (demos)")
+    ap.add_argument("--no-gps", action="store_true")
     args = ap.parse_args()
 
     running = [True]
@@ -52,6 +54,16 @@ def main():
             print(f"Pico: {pico.port}")
         except Exception as e:
             print(f"Pico not available ({e}); continuing without motors")
+
+    # ---- GPS ----------------------------------------------------------------
+    gps = None
+    if C.GPS_ENABLED and not args.no_gps:
+        try:
+            from gps import Gps
+            gps = Gps(configure_module=C.GPS_CONFIGURE)
+            print(f"GPS: {gps.port} at {gps.baud} baud")
+        except Exception as e:
+            print(f"GPS not available ({e}); continuing without GPS")
 
     # ---- Models and camera ----------------------------------------------------
     print("Loading TensorRT models...")
@@ -87,6 +99,7 @@ def main():
         from web import SharedState, start_server
         state = SharedState()
         state.recording = args.record
+        state.gps = gps
         server = start_server(state)
         print(f"Web view: http://<jetson-ip>:{C.WEB_PORT}")
 
@@ -194,6 +207,12 @@ def main():
                     "iso": getattr(source, "iso", None),
                     "rec": int(recorder is not None),
                     "web_clients": state.web_clients if state is not None else 0})
+        try:
+            gps_st = gps.status() if gps else {}
+        except Exception as e:                      # the GPS must never stop the navigation loop
+            gps_st = {"gps_fix": f"error: {e}"}
+        row.update({k: gps_st.get(k) for k in ("gps_fix", "gps_sats", "gps_sats_view", "gps_cn0_top4", "gps_hdop", "gps_lat", "gps_lon",
+                                                "gps_speed_kmh", "gps_course")})
         log.write(row)
 
         # Annotated recording: only frames processed with guidance ON
@@ -219,7 +238,8 @@ def main():
                     "pico": "connected" if pico else "no",
                     "cam_fps": row["cam_fps"], "exposure_ms": row["exp_ms"], "web_clients": row["web_clients"],
                     "guidance": "ON" if guidance else "OFF",
-                    "recording": state.rec_info, "photos": state.snapshots, "warning": warning}
+                    "recording": state.rec_info, "photos": state.snapshots, "warning": warning,
+                    **({k: v for k, v in gps_st.items() if k not in ("gps_course", "gps_sats_signal")} if gps else {"gps_fix": "off"})}
             state.update(frame, walkable, boxes, res, data)
 
         if t1 - t_print >= 2.0:
@@ -235,6 +255,8 @@ def main():
     if pico:
         pico.close()                # leaves the motors silent
     source.stop()
+    if gps:
+        gps.close()
     if recorder:
         close_recorder(recorder)
     if recorder_ann:

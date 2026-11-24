@@ -1,5 +1,6 @@
 #!/bin/bash
 sudo nvpmodel -m 0
+[ "${CLOCKS:-1}" = "1" ] && sudo jetson_clocks && echo "jetson_clocks ON"
 cd ~/Assistive-Navigation/harness_app
 source ~/yolo_env/bin/activate
 export DEPTHAI_DISABLE_CRASHDUMP_COLLECTION=1

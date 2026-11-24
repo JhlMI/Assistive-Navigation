@@ -70,6 +70,14 @@ PICO_PERIOD_S = 0.15               # command resend period (heartbeat)
 PICO_TIMEOUT_MS = 1000
 PICO_STALE_S = 0.5                 # no new decision from the main loop for this long -> send S
 
+# ---- GPS (u-blox M8N on the 40-pin UART) ----------------------------------------
+GPS_ENABLED = True                 # False: the app runs without GPS
+GPS_PORT = "/dev/ttyTHS1"          # pins 8 (TX) / 10 (RX) on JetPack 6
+GPS_BAUD = 115200
+GPS_RATE_MS = 200                  # 5 Hz
+GPS_DYN_MODEL = 3                  # u-blox dynamic model: 3 = pedestrian
+GPS_CONFIGURE = True               # apply the UBX setup at every start (clones may not keep it)
+
 # ---- 4S battery -------------------------------------------------------------
 VBAT_WARNING = 14.0                # 3.5 V per cell
 VBAT_CRITICAL = 13.2               # 3.3 V per cell

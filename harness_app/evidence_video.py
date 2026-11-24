@@ -82,7 +82,6 @@ def main():
 
     writer = None
     rows = []
-    pipe_ema = None                       # smoothed seg + det + plan time (ms)
     t_start = time.perf_counter()
     for i in range(first, last):
         ok, frame = cap.read()
@@ -97,10 +96,6 @@ def main():
                else decider.update(walkable, boxes, frame.shape))
         plan_ms = (time.perf_counter() - t0) * 1000
 
-        pipe_ms = times["seg_ms"] + times["det_ms"] + plan_ms
-        pipe_ema = pipe_ms if pipe_ema is None else 0.9 * pipe_ema + 0.1 * pipe_ms
-        pipe_fps = 1000.0 / pipe_ema
-
         t_clip = i / fps
         obst = getattr(res, "obst_dist", None)
         row = {"frame": i, "t_s": round(t_clip, 2), "command": res.command, "reason": res.reason,
@@ -109,23 +104,16 @@ def main():
                "obstacle_m": None if obst is None else round(obst, 2),
                "sidewalk_pct": round(100 * res.sidewalk_frac, 1), "n_boxes": len(boxes),
                "seg_ms": round(times["seg_ms"], 1), "det_ms": round(times["det_ms"], 1),
-               "plan_ms": round(plan_ms, 1), "pipeline_ms": round(pipe_ms, 1),
-               "pipeline_fps": round(1000.0 / pipe_ms, 1)}
+               "plan_ms": round(plan_ms, 1)}
         rows.append(row)
 
         mm, ss = divmod(t_clip, 60)
-        lines = [f"{src.name}  t={int(mm):02d}:{ss:05.2f}   ->   {res.command}  ({res.reason})"
-                 f"   |   pipeline {pipe_fps:4.1f} FPS ({pipe_ema:.0f} ms)",
+        lines = [f"{src.name}  t={int(mm):02d}:{ss:05.2f}   ->   {res.command}  ({res.reason})",
                  f"seg {row['seg_ms']} ms | det {row['det_ms']} ms | plan {row['plan_ms']} ms | "
                  f"sidewalk {row['sidewalk_pct']} % | boxes {row['n_boxes']}"
                  + (f" | path {row['path_len_m']} m | angle {row['angle_deg']} deg | obstacle {row['obstacle_m']} m"
                     if use_bev else f" | error {res.error:+.2f}")]
         img = compose(frame, walkable, boxes, res, perception.last_mask, lines)
-        badge = f"{pipe_fps:4.1f} FPS"
-        (tw, th), _ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
-        x0 = 1280 - tw - 20                                   # right edge of the camera view
-        cv2.rectangle(img, (x0 - 8, 36), (x0 + tw + 8, 36 + th + 16), (0, 0, 0), -1)
-        cv2.putText(img, badge, (x0, 36 + th + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (80, 255, 80), 2, cv2.LINE_AA)
         if args.scale != 1.0:
             img = cv2.resize(img, None, fx=args.scale, fy=args.scale, interpolation=cv2.INTER_AREA)
         h, w = img.shape[:2]
@@ -158,11 +146,9 @@ def main():
     cmds = {}
     for r in rows:
         cmds[r["command"]] = cmds.get(r["command"], 0) + 1
-    for key in ("seg_ms", "det_ms", "plan_ms", "pipeline_ms", "pipeline_fps"):
+    for key in ("seg_ms", "det_ms", "plan_ms"):
         v = np.array([r[key] for r in rows])
-        unit = "FPS" if key.endswith("fps") else "ms"
-        pct = np.percentile(v, 5 if unit == "FPS" else 95)
-        print(f"  {key:12s} mean {v.mean():5.1f} {unit}   {'p5 ' if unit == 'FPS' else 'p95'} {pct:5.1f} {unit}")
+        print(f"  {key:8s} mean {v.mean():5.1f}  p95 {np.percentile(v, 95):5.1f} ms")
     print("  commands: " + ", ".join(f"{k} {100 * n / len(rows):.0f} %" for k, n in sorted(cmds.items())))
     print(f"Saved {out_video}\n      {out_csv}")
 

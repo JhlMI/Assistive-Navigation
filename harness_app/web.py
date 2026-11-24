@@ -36,6 +36,7 @@ class SharedState:
         self.rec_info = None          # name of the current recording, set by the main loop
         self.snapshots = 0
         self.web_clients = 0          # browsers currently receiving /video (they cost CPU)
+        self.gps = None               # gps.Gps or None
 
     def update(self, frame, walkable, boxes, result, data):
         with self.lock:
@@ -127,6 +128,7 @@ grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px}
  <button id="p" onclick="photo()" style="background:#357">Take photo</button>
  <a href="/calib" target="_blank"><button style="background:#753">IPM calibration</button></a>
  <a href="/clean" target="_blank"><button style="background:#456">Clean view (demo)</button></a>
+ <a href="/gps" target="_blank"><button style="background:#375">GPS test</button></a>
 </div>
 <div id="msg"></div>
 <div id="s"></div>
@@ -155,6 +157,76 @@ CLEAN_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 img{width:100vw;height:100vh;object-fit:contain;display:block}</style></head>
 <body><img src="/video?clean=1" ondblclick="document.documentElement.requestFullscreen()"
  title="double click: full screen"></body></html>"""
+
+
+GPS_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>GPS test</title>
+<style>
+body{margin:0;background:#111;color:#eee;font-family:monospace}
+.w{max-width:720px;margin:0 auto;padding:10px 12px}
+button{font:17px monospace;padding:14px 16px;margin:4px 6px 4px 0;border:0;border-radius:6px;color:#fff;background:#555}
+#st{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px;margin:8px 0}
+#st div{background:#222;padding:6px 8px;border-radius:4px;overflow-wrap:anywhere}
+canvas{width:100%;background:#000;border-radius:6px;touch-action:none}
+#msg{color:#9cf;min-height:1.2em}
+</style></head><body><div class="w">
+<h3 style="margin:6px 0">GPS field test</h3>
+<button id="t" onclick="test()">Start test</button>
+<button id="m" onclick="mark()" style="background:#357">Mark point</button>
+<div id="msg"></div>
+<div id="st"></div>
+<canvas id="c" width="700" height="700"></canvas>
+<h4 style="margin:12px 0 4px">Satellites (signal C/N0, dB-Hz)</h4>
+<canvas id="k" width="700" height="260"></canvas>
+<p style="color:#888">Protocol: start the test, stand still 30 s at corner A and press <b>Mark point</b>,
+walk to corner B, wait 30 s and mark, walk back to A, wait 30 s and mark, stop the test.
+<b>spread_m</b> = scatter of the last 5 s (read it while standing still).
+<b>cn0_top4</b> = mean signal of the 4 strongest satellites: 40 or more is a clear sky; below 35 the sky is
+blocked or something near the antenna adds noise (USB 3 cable, Jetson).
+This page has no video: it costs nothing to the navigation loop.</p>
+</div><script>
+let tr={points:[],marks:[],testing:false};
+const c=document.getElementById('c'),g=c.getContext('2d');
+function draw(){
+ const P=tr.points;g.clearRect(0,0,c.width,c.height);
+ if(!P.length){g.fillStyle='#888';g.font='18px monospace';g.fillText(tr.testing?'waiting for fixes...':'no test running',20,40);return;}
+ let x0=Math.min(...P.map(p=>p[0])),x1=Math.max(...P.map(p=>p[0])),y0=Math.min(...P.map(p=>p[1])),y1=Math.max(...P.map(p=>p[1]));
+ const span=Math.max(x1-x0,y1-y0,10)*1.15,cx=(x0+x1)/2,cy=(y0+y1)/2,k=c.width/span;
+ const X=e=>c.width/2+(e-cx)*k,Y=n=>c.height/2-(n-cy)*k;
+ let step=span>60?20:span>25?10:5;g.strokeStyle='#222';g.lineWidth=1;
+ for(let v=Math.floor((cx-span/2)/step)*step;v<cx+span/2;v+=step){g.beginPath();g.moveTo(X(v),0);g.lineTo(X(v),c.height);g.stroke();}
+ for(let v=Math.floor((cy-span/2)/step)*step;v<cy+span/2;v+=step){g.beginPath();g.moveTo(0,Y(v));g.lineTo(c.width,Y(v));g.stroke();}
+ g.strokeStyle='#2c8';g.lineWidth=2;g.beginPath();P.forEach((p,i)=>i?g.lineTo(X(p[0]),Y(p[1])):g.moveTo(X(p[0]),Y(p[1])));g.stroke();
+ const L=P[P.length-1];g.fillStyle='#ff0';g.beginPath();g.arc(X(L[0]),Y(L[1]),6,0,7);g.fill();
+ g.font='bold 18px monospace';tr.marks.forEach(m=>{g.fillStyle='#f84';g.beginPath();g.arc(X(m[1]),Y(m[2]),7,0,7);g.fill();g.fillText(m[0],X(m[1])+9,Y(m[2])-9);});
+ g.fillStyle='#aaa';g.font='14px monospace';g.fillText('grid '+step+' m   N up   '+P.length+' fixes',10,c.height-12);
+}
+async function poll(){
+ try{tr=await (await fetch('/gps/track')).json();
+  const b=document.getElementById('t');b.textContent=tr.testing?'\u25CF Stop test':'Start test';b.style.background=tr.testing?'#c22':'#2a7';
+  const keys=['gps_fix','gps_sats','gps_sats_view','gps_cn0_top4','gps_hdop','gps_speed_kmh','spread_m','file'];
+  document.getElementById('st').innerHTML=keys.map(k=>`<div>${k}: <b>${tr[k]??'-'}</b></div>`).join('');
+  draw();sky();}catch(e){document.getElementById('msg').textContent='no connection';}
+}
+const kc=document.getElementById('k'),kg=kc.getContext('2d');
+const SC={GPS:'#4c9',GLONASS:'#e94',Galileo:'#59f',BeiDou:'#d6d'};
+function sky(){
+ const S=(tr.sky||[]).slice().sort((a,b)=>(b.snr||0)-(a.snr||0));kg.clearRect(0,0,kc.width,kc.height);
+ if(!S.length){kg.fillStyle='#888';kg.font='16px monospace';kg.fillText('no satellite data yet',16,30);return;}
+ const H=kc.height-40,bw=Math.min(40,(kc.width-20)/S.length),y=v=>10+H-H*Math.min(v,55)/55;
+ kg.strokeStyle='#555';kg.setLineDash([4,4]);[35,40].forEach(v=>{kg.beginPath();kg.moveTo(0,y(v));kg.lineTo(kc.width,y(v));kg.stroke();
+  kg.fillStyle='#777';kg.font='12px monospace';kg.fillText(v,kc.width-22,y(v)-3);});kg.setLineDash([]);
+ S.forEach((s,i)=>{const x=10+i*bw;kg.fillStyle=SC[s.sys]||'#aaa';
+  if(s.snr){kg.fillRect(x,y(s.snr),bw-4,10+H-y(s.snr));kg.fillStyle='#fff';kg.font='11px monospace';kg.fillText(s.snr,x+2,y(s.snr)-3);}
+  kg.fillStyle='#aaa';kg.font='10px monospace';kg.fillText(s.prn,x+1,kc.height-16);});
+ let lx=10;Object.entries(SC).forEach(([n,c])=>{kg.fillStyle=c;kg.fillRect(lx,kc.height-10,10,8);kg.fillStyle='#aaa';kg.font='11px monospace';kg.fillText(n,lx+13,kc.height-2);lx+=n.length*7+28;});
+}
+async function test(){const r=await (await fetch('/gps/test?on='+(tr.testing?0:1),{method:'POST'})).json();
+ document.getElementById('msg').textContent=r.file?(tr.testing?'Saved: ':'Recording: ')+r.file:(r.error||'');poll();}
+async function mark(){const r=await (await fetch('/gps/mark',{method:'POST'})).json();
+ document.getElementById('msg').textContent=r.mark?('Marked '+r.mark):'Start the test first';}
+setInterval(poll,1000);poll();
+</script></body></html>"""
 
 
 def start_server(state):
@@ -190,6 +262,12 @@ def start_server(state):
                     self.send_error(404)
             elif self.path == "/status":
                 self._send(json.dumps(state.snapshot()[4]).encode(), "application/json")
+            elif url.path == "/gps":
+                self._send(GPS_PAGE.encode(), "text/html; charset=utf-8")
+            elif url.path == "/gps/track":
+                body = state.gps.track() if state.gps else {"points": [], "marks": [], "testing": False,
+                                                            "gps_fix": "GPS not connected"}
+                self._send(json.dumps(body).encode(), "application/json")
             elif self.path == "/clean":
                 self._send(CLEAN_PAGE.encode(), "text/html; charset=utf-8")
             elif url.path == "/video":
@@ -235,6 +313,18 @@ def start_server(state):
                 if "recording" in q:
                     state.recording = q["recording"][0] == "1"
                 self._send(toggles(), "application/json")
+            elif url.path in ("/gps/test", "/gps/mark"):
+                gps = state.gps
+                if gps is None:
+                    out = {"error": "GPS not connected"}
+                elif url.path == "/gps/mark":
+                    out = {"mark": gps.mark()}
+                elif parse_qs(url.query).get("on", ["1"])[0] == "1":
+                    out = {"file": gps.start_test().name}
+                else:
+                    path = gps.stop_test()
+                    out = {"file": path.name if path else None}
+                self._send(json.dumps(out).encode(), "application/json")
             elif url.path == "/photo":
                 frame = state.frame
                 saved = str(save_snapshot(frame)) if frame is not None else None

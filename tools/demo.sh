@@ -5,6 +5,7 @@ VIDEO=${1:-$(ls -t ~/Assistive-Navigation/logs/navigation/rec_*.* | head -1)}
 FPS_ARG=""
 [ -n "$2" ] && FPS_ARG="--video-fps $2"
 sudo nvpmodel -m 0
+sudo jetson_clocks && echo "jetson_clocks ON"
 cd ~/Assistive-Navigation/harness_app
 source ~/yolo_env/bin/activate
 nohup python main.py --video "$VIDEO" $FPS_ARG --loop > ~/demo_run.log 2>&1 &

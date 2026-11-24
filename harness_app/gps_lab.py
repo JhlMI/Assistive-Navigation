@@ -1,0 +1,684 @@
+"""GPS lab: guided GPS field tests from the phone, with timers, automatic marks and results.
+
+Runs on its own (not with main.py: both cannot read the GPS port). By default it also opens
+the OAK-D Lite and keeps it streaming, so the USB 3 traffic near the antenna is the same as in
+real use (--no-camera to skip it).
+
+Tests (one at a time, each saved as its own CSV inside the session folder):
+  1. signal  - 3 min standing still: signal (C/N0), satellites, HDOP.
+  2. static  - optional 3 min settle + 10 min standing on point P: precision, bias vs P,
+               false speed, settle time.
+  3. route   - laps A -> B -> A: 30 s holds on each point (marked automatically with the mean of
+               the hold), walks ended with an "arrived" button. Error at the corners,
+               repeatability, A-B length, cross-track error, heading noise.
+  4. compass_cal   - 60 s turning around slowly, level: new hard/soft-iron calibration (saved).
+  5. compass_check - face N, E, S, O (from the phone compass), 8 s each: error per direction and
+                     suggested mounting offset (button to apply it).
+  6. motors        - motors off / left / right / both / off through the Pico: compass shift.
+The compass (if present) is logged in every test; in the route it is compared with the true
+A-B bearing and with the GPS course.
+
+Usage (Jetson):
+    ~/stop_test.sh                         # the app must not be running
+    cd ~/Assistive-Navigation/harness_app && source ~/yolo_env/bin/activate
+    python gps_lab.py                      # http://<jetson-ip>:8090
+    python gps_lab.py --no-camera
+    python gps_lab.py --no-compass
+From the phone (Termius), so it survives a dropped SSH session:
+    cd ~/Assistive-Navigation/harness_app && nohup ~/yolo_env/bin/python gps_lab.py > ~/gps_lab.log 2>&1 &
+    pkill -f gps_lab.py                    # stop (files are closed cleanly)
+
+Output: ~/Assistive-Navigation/logs/gps/lab/<session>/  (CSV per test, results.json)
+        ~/Assistive-Navigation/logs/gps/lab/ref_points.json  (P, A, B, kept between sessions)
+"""
+import argparse
+import csv
+import json
+import os
+import re
+import signal
+import socket
+import threading
+import time
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+import compass as CM
+import config as C
+import gps_analysis as GA
+from gps import Gps, to_local
+
+LAB_DIR = C.BASE / "logs" / "gps" / "lab"
+REF_FILE = LAB_DIR / "ref_points.json"
+PORT = 8090
+FIELDS = ["t_s", "utc", "lat", "lon", "fix", "sats", "sats_view", "cn0_top4", "hdop", "alt_m",
+          "speed_kmh", "course_deg", "compass_deg", "compass_b_ut", "mag_x", "mag_y", "mag_z",
+          "test", "phase", "lap"]
+MOTOR_PHASES = [("m_off", "S"), ("m_left", "L"), ("m_right", "R"), ("m_both", "X"), ("m_off_end", "S")]
+DIR_NAME = {"N": "Norte", "E": "Este", "S": "Sur", "O": "Oeste"}
+
+PHASE_TEXT = {
+    "settle":   ("Asentamiento", "Quieto, con la antena hacia arriba. El GPS se estabiliza."),
+    "record":   ("Grabando (estática)", "Quieto exactamente sobre P. No gires el cuerpo."),
+    "signal":   ("Señal", "Quieto. Se mide la señal con todo funcionando."),
+    "hold_A":   ("Quieto en A", "Párate sobre A y no te muevas. Se marca solo al terminar."),
+    "walk_AB":  ("Camina a B", "Camina a paso normal por el centro de la acera hasta B. Al llegar, presiona «Llegué a B»."),
+    "hold_B":   ("Quieto en B", "Párate sobre B y no te muevas. Se marca solo al terminar."),
+    "walk_BA":  ("Vuelve a A", "Vuelve caminando por la misma acera hasta A. Al llegar, presiona «Llegué a A»."),
+    "hold_A2":  ("Quieto en A (vuelta)", "Párate otra vez sobre A. Se marca solo al terminar."),
+    "lap_done": ("Vuelta terminada", "Puedes hacer otra vuelta o terminar la prueba."),
+    "cal_rotate": ("Calibrando brújula", "Gira sobre ti mismo despacio, 2 vueltas completas, derecho y sin inclinarte. "
+                   "Celular lejos del pecho (brazo estirado hacia abajo)."),
+    "m_off":     ("Motores apagados", "Quieto, mirando siempre al mismo lado."),
+    "m_left":    ("Motor izquierdo", "Quieto. No te muevas aunque vibre."),
+    "m_right":   ("Motor derecho", "Quieto. No te muevas aunque vibre."),
+    "m_both":    ("Ambos motores", "Quieto. No te muevas aunque vibre."),
+    "m_off_end": ("Motores apagados", "Quieto hasta el final."),
+}
+for _d, _n in DIR_NAME.items():
+    PHASE_TEXT[f"aim_{_d}"] = (f"Apunta al {_n}", f"Con la brújula del celular (norte verdadero desactivado), gira hasta "
+                               f"mirar al {_n}. Fíjate en una referencia y presiona «Listo».")
+    PHASE_TEXT[f"low_{_d}"] = ("Baja el celular", "Brazo estirado hacia abajo, lejos del pecho. Sigue mirando la referencia.")
+    PHASE_TEXT[f"hold_{_d}"] = (f"Midiendo {_n}", "Quieto, mirando la referencia.")
+
+
+def port_in_use(port):
+    """PIDs of other processes holding the serial port open."""
+    target = os.path.realpath(port)
+    pids = []
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        if int(pid) == os.getpid():
+            continue
+        try:
+            for fd in os.listdir(f"/proc/{pid}/fd"):
+                if os.path.realpath(f"/proc/{pid}/fd/{fd}") == target:
+                    pids.append(int(pid))
+                    break
+        except OSError:
+            continue
+    return pids
+
+
+def parse_latlon(text):
+    nums = re.findall(r"-?\d+(?:\.\d+)?", text or "")
+    if len(nums) < 2:
+        return None
+    lat, lon = float(nums[0]), float(nums[1])
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return {"lat": lat, "lon": lon}
+
+
+class CameraLoad:
+    """Keeps the OAK-D Lite streaming (frames are discarded) to reproduce the USB 3 noise."""
+
+    def __init__(self):
+        from camera import OakCamera
+        self.cam = OakCamera(C.CAMERA_FPS, C.CAMERA_FOCUS, C.FOCUS_RANGE)
+        self._run = True
+        self._t = threading.Thread(target=self._loop, daemon=True)
+        self._t.start()
+
+    def _loop(self):
+        last = -1
+        while self._run:
+            _, last = self.cam.next(last, timeout=1.0)
+
+    @property
+    def fps(self):
+        return self.cam.cam_fps
+
+    def stop(self):
+        self._run = False
+        self.cam.stop()
+
+
+class Lab:
+    def __init__(self, gps, camera, compass=None):
+        self.gps, self.camera, self.compass = gps, camera, compass
+        self.pico = None
+        self.lock = threading.RLock()
+        self.session = LAB_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session.mkdir(parents=True, exist_ok=True)
+        self.refs = json.loads(REF_FILE.read_text()) if REF_FILE.exists() else {}
+        self.dur = {"settle": 180, "signal": 180, "record": 600, "hold": 30, "cal": 60, "dir": 8, "motor": 15}
+        self.results = []            # analysed tests of this session
+        self.counter = {}
+        self._reset_test()
+        gps.listeners.append(self.on_fix)
+        threading.Thread(target=self._tick, daemon=True).start()
+
+    # ---- test state ----
+    def _reset_test(self):
+        self.test = None
+        self.phase = None
+        self.phase_t0 = None
+        self.phase_dur = None
+        self.queue = []
+        self.lap = 0
+        self.rows = []
+        self.t0 = None
+        self._f = self._w = None
+        self.csv_name = None
+        self.event = 0                      # bumps on every phase change (the page beeps)
+
+    def _open_csv(self, test):
+        self.counter[test] = self.counter.get(test, 0) + 1
+        self.csv_name = f"{test}_{self.counter[test]}.csv"
+        self._f = open(self.session / self.csv_name, "w", newline="")
+        self._w = csv.DictWriter(self._f, fieldnames=FIELDS, extrasaction="ignore")
+        self._w.writeheader()
+
+    def on_fix(self, ev):
+        with self.lock:
+            if self.test is None or self.phase in (None, "lap_done"):
+                return
+            if self.t0 is None:
+                self.t0 = ev["t"]
+            row = {**ev, **(self.compass.read() if self.compass else {}),
+                   "t_s": round(ev["t"] - self.t0, 2), "test": self.test, "phase": self.phase,
+                   "lap": self.lap or None}
+            if row.get("lat") is not None:
+                row["lat"], row["lon"] = round(row["lat"], 7), round(row["lon"], 7)
+            self.rows.append(row)
+            self._w.writerow(row)
+            self._f.flush()
+
+    def _set_phase(self, phase, dur):
+        self.phase, self.phase_dur, self.phase_t0 = phase, dur, time.monotonic()
+        self.event += 1
+        print(f"[{self.test}] phase {phase}" + (f" ({dur} s)" if dur else ""))
+
+    def _next_phase(self):
+        if self.queue:
+            self._set_phase(*self.queue.pop(0))
+        elif self.test == "route":
+            self._set_phase("lap_done", None)
+        else:
+            self.finish()
+
+    def _tick(self):
+        while True:
+            time.sleep(0.2)
+            with self.lock:
+                if self.phase_dur and time.monotonic() - self.phase_t0 >= self.phase_dur:
+                    self._next_phase()
+                if self.pico is not None:
+                    self.pico.command(dict(MOTOR_PHASES).get(self.phase, "S"))
+
+    def _lap_queue(self):
+        h = self.dur["hold"]
+        return [("hold_A", h), ("walk_AB", None), ("hold_B", h), ("walk_BA", None), ("hold_A2", h)]
+
+    # ---- actions ----
+    def action(self, a, body):
+        with self.lock:
+            if a == "set_refs":
+                for k in ("P", "A", "B"):
+                    if k in body:
+                        v = parse_latlon(body[k])
+                        if v:
+                            self.refs[k] = v
+                        elif not (body[k] or "").strip():
+                            self.refs.pop(k, None)
+                        else:
+                            return {"error": f"no entiendo las coordenadas de {k}"}
+                LAB_DIR.mkdir(parents=True, exist_ok=True)
+                REF_FILE.write_text(json.dumps(self.refs, indent=2))
+                return {"ok": True}
+            if a == "set_durations":
+                for k in self.dur:
+                    if body.get(k):
+                        self.dur[k] = max(5, int(float(body[k])))
+                return {"ok": True}
+            if a.startswith("start_"):
+                if self.test is not None:
+                    return {"error": "ya hay una prueba en curso"}
+                self.test = a[6:]
+                self._open_csv(self.test)
+                if self.test == "signal":
+                    self.queue = [("signal", self.dur["signal"])]
+                elif self.test == "static":
+                    self.queue = ([] if body.get("skip_settle") else [("settle", self.dur["settle"])]) \
+                        + [("record", self.dur["record"])]
+                elif self.test == "route":
+                    self.lap = 1
+                    self.queue = self._lap_queue()
+                elif self.test in ("compass_cal", "compass_check", "motors") and self.compass is None:
+                    self._close_csv_only()
+                    return {"error": "brújula no disponible (revisa I2C o quita --no-compass)"}
+                elif self.test == "compass_cal":
+                    self.queue = [("cal_rotate", self.dur["cal"])]
+                elif self.test == "compass_check":
+                    self.queue = [q for d in CM.DIRS for q in
+                                  ((f"aim_{d}", None), (f"low_{d}", 4), (f"hold_{d}", self.dur["dir"]))]
+                elif self.test == "motors":
+                    try:
+                        from pico import Pico
+                        self.pico = Pico()
+                    except Exception as e:
+                        self._close_csv_only()
+                        return {"error": f"no se pudo abrir la Pico: {e}"}
+                    self.queue = [(p, self.dur["motor"]) for p, _ in MOTOR_PHASES]
+                else:
+                    self._reset_test()
+                    return {"error": "prueba desconocida"}
+                self._next_phase()
+                return {"ok": True}
+            if a == "apply_mount":
+                if self.compass is None:
+                    return {"error": "brújula no disponible"}
+                chk = next((r for r in reversed(self.results) if r["test"] == "compass_check"), None)
+                if not chk:
+                    return {"error": "primero haz la verificación N/E/S/O"}
+                if chk.get("sense_inverted"):
+                    self.compass.set_mount(self.compass.mount, flip=not self.compass.flip)
+                    chk["applied"] = "flip cambiado: repite la verificación"
+                elif chk.get("suggested_mount_deg") is not None:
+                    self.compass.set_mount(chk["suggested_mount_deg"])
+                    chk["applied"] = f"montaje = {self.compass.mount}°"
+                self._write_results()
+                return {"ok": True}
+            if self.test is None:
+                return {"error": "no hay prueba en curso"}
+            if a in ("arrived", "skip", "ready"):
+                if a == "arrived" and not (self.phase or "").startswith("walk"):
+                    return {"error": "no estás caminando"}
+                if a == "ready" and not (self.phase or "").startswith("aim_"):
+                    return {"error": "no corresponde ahora"}
+                self._next_phase()
+                return {"ok": True}
+            if a == "next_lap" and self.phase == "lap_done":
+                self.lap += 1
+                self.queue = self._lap_queue()
+                self._next_phase()
+                return {"ok": True}
+            if a == "finish":
+                self.finish()
+                return {"ok": True}
+            if a == "abort":
+                self.finish(analyse=False)
+                return {"ok": True}
+            return {"error": "acción no válida"}
+
+    def _close_csv_only(self):
+        if self._f:
+            self._f.close()
+            (self.session / self.csv_name).unlink(missing_ok=True)
+            self.counter[self.test] -= 1
+        self._reset_test()
+
+    def _stop_pico(self):
+        if self.pico is not None:
+            try:
+                self.pico.command("S")
+                time.sleep(0.2)
+                self.pico.close()
+            except Exception as e:
+                print(f"Pico close error: {e}")
+            self.pico = None
+
+    def finish(self, analyse=True):
+        with self.lock:
+            if self._f:
+                self._f.close()
+            rows, test, name = self.rows, self.test, self.csv_name
+            self._reset_test()
+            self._stop_pico()
+            self.event += 1
+        if not analyse or not rows:
+            return
+        if test == "signal":
+            res = GA.analyze_signal(rows)
+        elif test == "static":
+            res = GA.analyze_static(rows, self.refs)
+        elif test == "compass_cal":
+            samples = [(r["mag_x"], r["mag_y"], r["mag_z"]) for r in rows if r.get("mag_x") is not None]
+            res = {"test": "compass_cal", **CM.calibration_from(samples)}
+            if "error" not in res:
+                if res["coverage_pct"] < 90:
+                    res["error"] = f"vuelta incompleta (cubierto {res['coverage_pct']} %): no se guardó"
+                else:
+                    self.compass.set_calibration({k: v for k, v in res.items() if k != "test"})
+                    res["saved"] = str(self.compass.cal_file)
+        elif test == "compass_check":
+            res = CM.analyze_check(rows, self.compass.flip, self.compass.mount)
+            res["mount_used_deg"], res["flip_used"] = self.compass.mount, self.compass.flip
+        elif test == "motors":
+            res = CM.analyze_motors(rows)
+        else:
+            laps = sorted({r["lap"] for r in rows if r.get("lap")})
+            res = {"test": "route", "laps": [self._lap_with_compass(rows, l) for l in laps]}
+        res["file"] = name
+        res["camera_streaming"] = self.camera is not None
+        res["refs"] = {k: v for k, v in self.refs.items()}
+        with self.lock:
+            self.results.append(res)
+        self._write_results()
+        print(f"Saved {self.session / name} and results.json")
+
+    def _lap_with_compass(self, rows, lap):
+        out = GA.analyze_lap(rows, self.refs, lap)
+        lr = [r for r in rows if r.get("lap") == lap]
+        A, B = self.refs.get("A"), self.refs.get("B")
+        for seg, p0, p1 in (("walk_AB", A, B), ("walk_BA", B, A)):
+            brg = None
+            if p0 and p1:
+                e, n = to_local(p1["lat"], p1["lon"], p0["lat"], p0["lon"])
+                brg = GA.bearing_deg(e, n)
+            cw = CM.compass_walk(lr, seg, brg)
+            if cw and isinstance(out.get(seg), dict):
+                out[seg].update(cw)
+        return out
+
+    def _write_results(self):
+        with self.lock:
+            static = next((r for r in reversed(self.results) if r["test"] == "static"), None)
+            laps = [l for r in self.results if r["test"] == "route" for l in r["laps"]]
+            out = {"session": self.session.name, "tests": self.results,
+                   "suggested_filter": GA.suggestions(static, laps),
+                   "compass": self.compass.info() if self.compass else None}
+        (self.session / "results.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
+
+    # ---- state for the page ----
+    def state(self):
+        st = self.gps.status()
+        with self.lock:
+            remaining = (max(0.0, self.phase_dur - (time.monotonic() - self.phase_t0))
+                         if self.phase_dur else None)
+            org_name = "A" if self.test == "route" else "P"
+            fixes = [r for r in self.rows if r.get("lat") is not None]
+            o = ((self.refs[org_name]["lat"], self.refs[org_name]["lon"]) if self.refs.get(org_name)
+                 else (fixes[0]["lat"], fixes[0]["lon"]) if fixes else None)
+            step = max(1, len(fixes) // 2500)
+            track = [[*map(lambda x: round(x, 2), to_local(r["lat"], r["lon"], *o)), r["phase"]]
+                     for r in fixes[::step]] if o else []
+            refs_local = {k: [round(x, 2) for x in to_local(v["lat"], v["lon"], *o)]
+                          for k, v in self.refs.items()} if o else {}
+            elapsed = (time.monotonic() - self.phase_t0) if self.phase_t0 else None
+            static = next((r for r in reversed(self.results) if r["test"] == "static"), None)
+            laps = [l for r in self.results if r["test"] == "route" for l in r["laps"]]
+            ab = None
+            if self.refs.get("A") and self.refs.get("B"):
+                e, n = to_local(self.refs["B"]["lat"], self.refs["B"]["lon"], self.refs["A"]["lat"], self.refs["A"]["lon"])
+                ab = round((e * e + n * n) ** 0.5, 1)
+            comp = None
+            if self.compass:
+                comp = {**self.compass.read(), **self.compass.info()}
+            return {"gps": st, "sky": self.gps.sky_list(), "compass": comp,
+                    "camera": (None if self.camera is None else round(self.camera.fps or 0, 1)),
+                    "test": self.test, "phase": self.phase, "lap": self.lap,
+                    "phase_title": PHASE_TEXT.get(self.phase, ("", ""))[0],
+                    "phase_text": PHASE_TEXT.get(self.phase, ("", ""))[1],
+                    "remaining": None if remaining is None else round(remaining, 1),
+                    "elapsed": None if elapsed is None else round(elapsed, 1),
+                    "phase_dur": self.phase_dur, "event": self.event,
+                    "n_rows": len(self.rows), "track": track, "refs_local": refs_local,
+                    "refs": self.refs, "ab_true_m": ab, "durations": self.dur,
+                    "results": self.results[-6:][::-1],
+                    "suggested_filter": GA.suggestions(static, laps) if self.results else {},
+                    "session": self.session.name,
+                    "files": sorted(p.name for p in self.session.iterdir())}
+
+
+PAGE = r"""<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>GPS lab</title>
+<style>
+:root{--bg:#101214;--card:#1b1e22;--line:#2a2e34;--tx:#e8eaed;--mut:#8a9099;--ok:#3ccf7a;--warn:#f0b43c;--bad:#ef5a5a;--acc:#4ea1ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.w{max-width:760px;margin:0 auto;padding:10px 12px 40px}
+h1{font-size:18px;margin:6px 0 10px}h2{font-size:15px;margin:0 0 8px;color:var(--mut);font-weight:600}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin:10px 0}
+.st{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.st div{background:#14171a;border-radius:6px;padding:6px 8px}
+.st small{display:block;color:var(--mut);font-size:11px}.st b{font-size:17px}
+button{font:600 16px system-ui,sans-serif;border:0;border-radius:8px;padding:14px 14px;margin:4px 4px 4px 0;color:#fff;background:#3a4049}
+button.big{width:100%;font-size:20px;padding:20px;margin:8px 0}
+.go{background:#1f8a4c}.blue{background:#2c6cb8}.red{background:#a83232}.ghost{background:transparent;border:1px solid var(--line);color:var(--mut);font-size:14px;padding:10px}
+#phase{font-size:22px;font-weight:700}#ptext{color:var(--mut);margin:4px 0 8px}
+#count{font:700 56px ui-monospace,monospace;text-align:center;margin:6px 0}
+.bar{height:8px;background:#14171a;border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
+canvas{width:100%;background:#0b0c0e;border-radius:8px;display:block}
+input{width:100%;font:15px ui-monospace,monospace;padding:10px;border-radius:6px;border:1px solid var(--line);background:#0e1012;color:var(--tx);margin:3px 0 8px}
+label{font-size:13px;color:var(--mut)}table{width:100%;border-collapse:collapse;font-size:14px}td{padding:5px 4px;border-bottom:1px solid var(--line)}td:last-child{text-align:right;font-family:ui-monospace,monospace}td[colspan]{text-align:left!important;font-family:inherit}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.mut{color:var(--mut);font-size:13px}a{color:var(--acc)}
+details summary{cursor:pointer;color:var(--mut);font-weight:600}
+</style></head><body><div class="w">
+<h1>GPS lab</h1>
+<div class="st" id="st"></div>
+<div class="card" id="run"></div>
+<div class="card"><h2>Recorrido (metros, norte arriba)</h2><canvas id="map" width="720" height="720"></canvas>
+<div class="mut" id="maplg"></div></div>
+<div class="card"><h2>Satélites: señal C/N0 (dB-Hz)</h2><canvas id="sky" width="720" height="220"></canvas></div>
+<div class="card" id="res"></div>
+<div class="card"><details><summary>Puntos de referencia (P, A, B)</summary><p class="mut">Google Maps: mantén presionado el punto y copia
+«lat, lon». Se guardan para las próximas sesiones.</p>
+<label>P (prueba estática)</label><input id="rP" placeholder="-16.52540, -68.10384">
+<label>A (esquina inicial)</label><input id="rA"><label>B (esquina final)</label><input id="rB">
+<button class="blue" onclick="saveRefs()">Guardar puntos</button> <span class="mut" id="abd"></span></details></div>
+<div class="card"><details><summary>Duraciones (segundos)</summary>
+<div class="row"><div style="flex:1"><label>Señal</label><input id="dsignal"></div><div style="flex:1"><label>Asentamiento</label><input id="dsettle"></div></div>
+<div class="row"><div style="flex:1"><label>Estática</label><input id="drecord"></div><div style="flex:1"><label>Quieto en esquina</label><input id="dhold"></div></div>
+<div class="row"><div style="flex:1"><label>Calibrar brújula</label><input id="dcal"></div><div style="flex:1"><label>Cada dirección</label><input id="ddir"></div><div style="flex:1"><label>Cada fase motores</label><input id="dmotor"></div></div>
+<button onclick="saveDur()">Guardar duraciones</button></details></div>
+<div class="card"><h2>Archivos de la sesión</h2><div id="files" class="mut"></div></div>
+</div><script>
+let S=null,lastEv=-1,ac=null,lastBeepSec=null,filled=false;
+const $=id=>document.getElementById(id);
+function beep(f=880,ms=180){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),g=ac.createGain();
+ o.frequency.value=f;o.connect(g);g.connect(ac.destination);g.gain.value=.25;o.start();o.stop(ac.currentTime+ms/1000);}catch(e){}}
+function alertPhase(){beep(660,200);setTimeout(()=>beep(990,260),250);if(navigator.vibrate)navigator.vibrate([300,120,300]);}
+async function act(a,body={}){beep(1,1);const r=await (await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a,...body})})).json();
+ if(r.error)alert(r.error);poll();}
+function cls(v,good,ok){return v==null?'':v>=good?'color:var(--ok)':v>=ok?'color:var(--warn)':'color:var(--bad)';}
+function fmt(s){if(s==null)return'';s=Math.ceil(s);const m=Math.floor(s/60);return m+':'+String(s%60).padStart(2,'0');}
+function status(){const g=S.gps;const it=[
+ ['Fix',g.gps_fix,g.gps_fix=='yes'?'color:var(--ok)':'color:var(--bad)'],
+ ['Satélites usados / vistos',(g.gps_sats??'-')+' / '+(g.gps_sats_view??'-'),cls(g.gps_sats,8,6)],
+ ['Señal cn0_top4',g.gps_cn0_top4??'-',cls(g.gps_cn0_top4,35,30)],
+ ['HDOP',g.gps_hdop??'-',g.gps_hdop==null?'':g.gps_hdop<=1.5?'color:var(--ok)':g.gps_hdop<=2.5?'color:var(--warn)':'color:var(--bad)'],
+ ['Velocidad km/h',g.gps_speed_kmh??'-',''],
+ ['Cámara',S.camera==null?'apagada':S.camera+' FPS',S.camera==null?'color:var(--warn)':''],
+ ['Brújula',S.compass==null?'no':S.compass.compass_deg==null?'sin datos':S.compass.compass_deg+'°',S.compass==null||S.compass.compass_deg==null?'color:var(--warn)':''],
+ ['|B| µT',S.compass?.compass_b_ut??'-',''],
+ ['Calibración',S.compass==null?'-':S.compass.calibrated?'sí · '+S.compass.mount_deg+'°'+(S.compass.flip?' · flip':''):'NO',S.compass&&!S.compass.calibrated?'color:var(--bad)':'']];
+ $('st').innerHTML=it.map(x=>`<div><small>${x[0]}</small><b style="${x[2]}">${x[1]}</b></div>`).join('');}
+function run(){let h='';
+ if(!S.test){h=`<h2>Elegir prueba</h2>
+ <button class="big go" onclick="act('start_signal')">1 · Señal (${fmt(S.durations.signal)})</button>
+ <button class="big go" onclick="act('start_static',{skip_settle:$('sk').checked})">2 · Estática en P (${fmt(S.durations.settle)} + ${fmt(S.durations.record)})</button>
+ <label><input type="checkbox" id="sk" style="width:auto"> Saltar asentamiento (si acabas de hacer la prueba 1 aquí)</label>
+ <button class="big go" onclick="act('start_route')">3 · Ruta A → B → A</button>
+ <h2 style="margin-top:14px">Brújula</h2>
+ <button class="big blue" onclick="act('start_compass_cal')">4 · Calibrar brújula (${fmt(S.durations.cal)})</button>
+ <button class="big blue" onclick="act('start_compass_check')">5 · Verificar N / E / S / O</button>
+ <button class="big blue" onclick="act('start_motors')">6 · Motores vs brújula (${fmt(5*S.durations.motor)})</button>
+ ${S.compass==null?'<p class="mut">Brújula no disponible.</p>':''}
+ ${(!S.refs.P||!S.refs.A||!S.refs.B)?'<p class="mut">Faltan puntos de referencia: los resultados saldrán sin el error contra la posición real.</p>':''}`;}
+ else{const walk=(S.phase||'').startsWith('walk');
+ h=`<div class="mut">Prueba: ${S.test}${S.test=='route'?' · vuelta '+S.lap:''} · ${S.n_rows} fixes</div>
+ <div id="phase">${S.phase_title}</div><div id="ptext">${S.phase_text}</div>`;
+ if(S.remaining!=null)h+=`<div id="count">${fmt(S.remaining)}</div><div class="bar"><i style="width:${100*(1-S.remaining/S.phase_dur)}%"></i></div>`;
+ else if(walk)h+=`<div id="count">${fmt(S.elapsed)}</div>`;
+ if(S.phase=='walk_AB')h+=`<button class="big blue" onclick="act('arrived')">Llegué a B</button>`;
+ if(S.phase=='walk_BA')h+=`<button class="big blue" onclick="act('arrived')">Llegué a A</button>`;
+ if((S.phase||'').startsWith('aim_'))h+=`<button class="big blue" onclick="act('ready')">Listo, estoy mirando al ${{N:'Norte',E:'Este',S:'Sur',O:'Oeste'}[S.phase.slice(4)]}</button>`;
+ if(S.compass&&/^(aim_|low_|hold_[NESO]|cal_|m_)/.test(S.phase||''))h+=`<div style="text-align:center;font:700 30px ui-monospace,monospace;margin:6px 0">${S.compass.compass_deg??'--'}° <span style="font-size:16px;color:var(--mut)">|B| ${S.compass.compass_b_ut??'-'} µT</span></div>`;
+ if(S.phase=='lap_done')h+=`<button class="big go" onclick="act('next_lap')">Otra vuelta</button><button class="big blue" onclick="act('finish')">Terminar y analizar</button>`;
+ h+=`<div class="row" style="margin-top:8px">${S.phase!='lap_done'?'<button class="ghost" onclick="act(\'skip\')">Saltar fase</button>':''}
+ <button class="ghost" onclick="if(confirm('¿Terminar ahora y analizar lo grabado?'))act('finish')">Terminar</button>
+ <button class="ghost" onclick="if(confirm('¿Cancelar sin analizar?'))act('abort')">Cancelar</button></div>`;}
+ $('run').innerHTML=h;}
+const PC={settle:'#555',signal:'#888',record:'#3ccf7a',hold_A:'#f0b43c',hold_B:'#f0b43c',hold_A2:'#f0b43c',walk_AB:'#4ea1ff',walk_BA:'#b07cff'};
+function map(){const c=$('map'),g=c.getContext('2d');g.clearRect(0,0,c.width,c.height);
+ const P=S.track,R=S.refs_local;const xs=P.map(p=>p[0]).concat(Object.values(R).map(r=>r[0])),ys=P.map(p=>p[1]).concat(Object.values(R).map(r=>r[1]));
+ if(!xs.length){g.fillStyle='#8a9099';g.font='18px system-ui';g.fillText(S.test?'esperando fixes…':'sin prueba en curso',20,40);$('maplg').textContent='';return;}
+ const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys),span=Math.max(x1-x0,y1-y0,8)*1.2,cx=(x0+x1)/2,cy=(y0+y1)/2,k=c.width/span;
+ const X=e=>c.width/2+(e-cx)*k,Y=n=>c.height/2-(n-cy)*k;
+ const step=span>120?20:span>50?10:span>20?5:span>8?2:1;g.strokeStyle='#1d2126';g.lineWidth=1;
+ for(let v=Math.floor((cx-span/2)/step)*step;v<cx+span/2;v+=step){g.beginPath();g.moveTo(X(v),0);g.lineTo(X(v),c.height);g.stroke();}
+ for(let v=Math.floor((cy-span/2)/step)*step;v<cy+span/2;v+=step){g.beginPath();g.moveTo(0,Y(v));g.lineTo(c.width,Y(v));g.stroke();}
+ for(let i=1;i<P.length;i++){g.strokeStyle=PC[P[i][2]]||'#aaa';g.lineWidth=2;g.beginPath();g.moveTo(X(P[i-1][0]),Y(P[i-1][1]));g.lineTo(X(P[i][0]),Y(P[i][1]));g.stroke();}
+ if(P.length){const L=P[P.length-1];g.fillStyle='#fff';g.beginPath();g.arc(X(L[0]),Y(L[1]),6,0,7);g.fill();}
+ g.font='bold 18px system-ui';for(const[n,r]of Object.entries(R)){g.strokeStyle='#ef5a5a';g.lineWidth=3;g.strokeRect(X(r[0])-7,Y(r[1])-7,14,14);g.fillStyle='#ef5a5a';g.fillText(n,X(r[0])+10,Y(r[1])-10);}
+ $('maplg').innerHTML=`Cuadrícula ${step} m · cuadros rojos = puntos reales · colores: <span style="color:#3ccf7a">estática</span>, <span style="color:#f0b43c">quieto en esquina</span>, <span style="color:#4ea1ff">ida</span>, <span style="color:#b07cff">vuelta</span>`;}
+const SC={GPS:'#3ccf7a',GLONASS:'#f0b43c',Galileo:'#4ea1ff',BeiDou:'#d070d0'};
+function sky(){const c=$('sky'),g=c.getContext('2d');g.clearRect(0,0,c.width,c.height);const L=(S.sky||[]).slice().sort((a,b)=>(b.snr||0)-(a.snr||0));
+ if(!L.length){g.fillStyle='#8a9099';g.font='16px system-ui';g.fillText('sin datos de satélites',16,30);return;}
+ const H=c.height-36,bw=Math.min(40,(c.width-20)/L.length),y=v=>8+H-H*Math.min(v,55)/55;
+ g.setLineDash([4,4]);g.strokeStyle='#444';[35,40].forEach(v=>{g.beginPath();g.moveTo(0,y(v));g.lineTo(c.width,y(v));g.stroke();g.fillStyle='#777';g.font='12px system-ui';g.fillText(v,c.width-22,y(v)-3);});g.setLineDash([]);
+ L.forEach((s,i)=>{const x=10+i*bw;g.fillStyle=SC[s.sys]||'#aaa';if(s.snr){g.fillRect(x,y(s.snr),bw-4,8+H-y(s.snr));}g.fillStyle='#8a9099';g.font='10px system-ui';g.fillText(s.prn,x,c.height-14);});
+ let lx=10;Object.entries(SC).forEach(([n,col])=>{g.fillStyle=col;g.fillRect(lx,c.height-9,9,8);g.fillStyle='#8a9099';g.font='11px system-ui';g.fillText(n,lx+12,c.height-1);lx+=n.length*7+26;});}
+const LBL={duration_s:'Duración (s)',fixes:'Fixes',cn0_top4_mean:'Señal media (dB-Hz)',cn0_top4_min:'Señal mínima',sats_mean:'Satélites usados',sats_view_mean:'Satélites vistos',hdop_mean:'HDOP medio',hdop_max:'HDOP máximo',
+ cep50_m:'CEP50 (m)',p95_m:'p95 (m)',max_m:'Máximo (m)',rms_m:'RMS (m)',sigma_e_m:'σ este (m)',sigma_n_m:'σ norte (m)',n:'Muestras',bias_m:'Sesgo (m)',bias_e_m:'Sesgo este (m)',bias_n_m:'Sesgo norte (m)',bias_dir_deg:'Dirección del sesgo (°)',
+ mean:'Media',p95:'p95',max:'Máximo',settle_s:'Asentamiento (s)',error_vs_truth_m:'Error vs punto real (m)',hold_cep50_m:'Dispersión CEP50 (m)',hold_p95_m:'Dispersión p95 (m)',repeatability_A_m:'Repetibilidad A ida/vuelta (m)',
+ AB_measured_m:'A–B medido (m)',AB_true_m:'A–B real (m)',AB_error_m:'Error de largo A–B (m)',speed_kmh_mean:'Velocidad media (km/h)',cross_track_rms_m:'Desvío lateral RMS (m)',cross_track_mean_m:'Desvío lateral medio (m)',cross_track_max_m:'Desvío lateral máx (m)',
+ heading_bias_deg:'Sesgo del rumbo GPS (°)',heading_sigma_deg:'Ruido del rumbo GPS σ (°)',
+ compass_bias_deg:'Sesgo brújula vs A–B (°)',compass_sigma_deg:'Ruido brújula σ (°)',compass_vs_gps_bias_deg:'Brújula − rumbo GPS (°)',compass_vs_gps_sigma_deg:'σ brújula − GPS (°)',
+ offset:'Desfase hard-iron X/Y/Z (µT)',scale:'Escala X/Y',radius_uT:'Radio X/Y (µT)',ratio_xy:'Relación X/Y',coverage_pct:'Vuelta cubierta (%)',samples:'Muestras',date:'Fecha',saved:'Guardada en',
+ dir_N:'Norte',dir_E:'Este',dir_S:'Sur',dir_O:'Oeste',heading_deg:'Brújula (°)',error_deg:'Error (°)',noise_deg:'Ruido máx (°)',b_ut:'|B| (µT)',db_ut:'Cambio |B| (µT)',
+ sense_inverted:'Sentido invertido',note:'Nota',bias_deg:'Error medio (°)',error_max_raw_deg:'Error máx (°)',error_max_after_bias_deg:'Error máx corregido (°)',b_range_ut:'Rango |B| (µT)',
+ suggested_mount_deg:'Montaje sugerido (°)',mount_used_deg:'Montaje usado (°)',flip_used:'Flip usado',applied:'Aplicado',
+ m_off:'Apagados',m_left:'Izquierdo',m_right:'Derecho',m_both:'Ambos',m_off_end:'Apagados (final)',shift_deg:'Corrimiento (°)',max_deg:'Máx (°)',worst_shift_deg:'Peor corrimiento (°)',verdict:'Veredicto',heading_samples:'Muestras de rumbo',precision:'Precisión (dispersión)',accuracy_vs_P:'Exactitud vs P',false_speed_kmh:'Velocidad falsa quieto (km/h)',
+ mark_A_start:'Marca A (ida)',mark_B:'Marca B',mark_A_end:'Marca A (vuelta)',walk_AB:'Ida A→B',walk_BA:'Vuelta B→A',meas_sigma_m:'σ de medición (m)',still_speed_kmh:'Umbral de quieto (km/h)',arrival_radius_m:'Radio de llegada (m)'};
+function rows(o,ind=0){let h='';for(let[k,v]of Object.entries(o)){if(['test','file','refs','camera_streaming','laps','lap','error'].includes(k))continue;
+ if(Array.isArray(v))v=v.join(' / ');if(typeof v=='boolean')v=v?'sí':'no';
+ if(v&&typeof v=='object'){h+=`<tr><td colspan=2 style="padding-left:${ind*14}px;color:var(--acc)">${LBL[k]||k}</td></tr>`+rows(v,ind+1);}
+ else h+=`<tr><td style="padding-left:${ind*14}px">${LBL[k]||k}</td><td>${v??'-'}</td></tr>`;}return h;}
+function results(){let h='<h2>Resultados</h2>';if(!S.results.length){$('res').innerHTML=h+'<div class="mut">Aparecen al terminar cada prueba.</div>';return;}
+ for(const r of S.results){h+=`<div style="margin:10px 0 4px;font-weight:700">${{signal:'Señal',static:'Estática',route:'Ruta',compass_cal:'Calibración brújula',compass_check:'Verificación brújula',motors:'Motores vs brújula'}[r.test]} · ${r.file}${r.camera_streaming?'':' · <span style="color:var(--warn)">sin cámara</span>'}</div>`;
+  if(r.error)h+=`<div style="color:var(--bad)">${r.error}</div>`;
+  if(r.test=='compass_check'&&!r.applied&&(r.sense_inverted||r.suggested_mount_deg!=null))h+=`<button class="blue" onclick="act('apply_mount')">${r.sense_inverted?'Invertir sentido (flip)':'Aplicar montaje '+r.suggested_mount_deg+'°'}</button>`;
+  if(r.test=='route')r.laps.forEach(l=>{h+=`<div class="mut">Vuelta ${l.lap}</div><table>${rows(l)}</table>`;});else h+=`<table>${rows(r)}</table>`;}
+ if(Object.keys(S.suggested_filter||{}).length)h+=`<div style="margin:12px 0 4px;font-weight:700">Parámetros sugeridos para el filtro</div><table>${rows(S.suggested_filter)}</table>`;
+ $('res').innerHTML=h;}
+function files(){$('files').innerHTML=`Sesión ${S.session}: `+(S.files.map(f=>`<a href="/files/${S.session}/${f}" download>${f}</a>`).join(' · ')||'todavía vacía');}
+function fill(){if(filled)return;filled=true;for(const k of['P','A','B'])if(S.refs[k])$('r'+k).value=S.refs[k].lat+', '+S.refs[k].lon;
+ for(const k in S.durations)$('d'+k).value=S.durations[k];}
+async function saveRefs(){await act('set_refs',{P:$('rP').value,A:$('rA').value,B:$('rB').value});filled=false;}
+async function saveDur(){const b={};for(const k in S.durations)b[k]=$('d'+k).value;await act('set_durations',b);}
+async function poll(){try{S=await (await fetch('/api/state')).json();}catch(e){$('st').innerHTML='<div style="grid-column:1/-1;color:var(--bad)">Sin conexión con la Jetson</div>';return;}
+ if(lastEv>=0&&S.event!=lastEv)alertPhase();lastEv=S.event;
+ if(S.remaining!=null&&S.remaining<=3.5&&S.remaining>0){const s=Math.ceil(S.remaining);if(s!==lastBeepSec){lastBeepSec=s;beep(520,90);}}
+ status();run();map();sky();results();files();fill();
+ $('abd').textContent=S.ab_true_m?`A–B real: ${S.ab_true_m} m`:'';}
+setInterval(poll,1000);poll();
+</script></body></html>"""
+
+
+def make_handler(lab):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, body, ctype="application/json", code=200, extra=None):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = urlparse(self.path).path
+            if path == "/":
+                self._send(PAGE.encode(), "text/html; charset=utf-8")
+            elif path == "/api/state":
+                self._send(json.dumps(lab.state()).encode())
+            elif path.startswith("/files/"):
+                parts = unquote(path[7:]).split("/")
+                if len(parts) != 2 or any(p in ("", ".", "..") or "/" in p for p in parts):
+                    return self._send(b"bad path", "text/plain", 400)
+                f = LAB_DIR / parts[0] / parts[1]
+                if not f.is_file():
+                    return self._send(b"not found", "text/plain", 404)
+                ctype = "application/json" if f.suffix == ".json" else "text/csv"
+                self._send(f.read_bytes(), ctype, extra={"Content-Disposition": f'attachment; filename="{f.name}"'})
+            else:
+                self._send(b"not found", "text/plain", 404)
+
+        def do_POST(self):
+            if urlparse(self.path).path != "/api/action":
+                return self._send(b"not found", "text/plain", 404)
+            n = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                return self._send(b'{"error":"json"}', code=400)
+            self._send(json.dumps(lab.action(body.get("action", ""), body)).encode())
+    return H
+
+
+def local_ips():
+    ips = set()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ips.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    return sorted(ips) or ["<jetson-ip>"]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--no-camera", action="store_true", help="do not stream the camera (no USB 3 noise)")
+    ap.add_argument("--no-compass", action="store_true", help="do not read the compass (I2C)")
+    ap.add_argument("--port", type=int, default=PORT)
+    args = ap.parse_args()
+
+    busy = port_in_use(C.GPS_PORT)
+    if busy:
+        raise SystemExit(f"{C.GPS_PORT} is in use by PID {busy} (navigation app?). Run ~/stop_test.sh first.")
+    print("Connecting to the GPS...")
+    gps = Gps(configure_module=C.GPS_CONFIGURE)
+    print(f"GPS: {gps.port} at {gps.baud} baud")
+    camera = None
+    if not args.no_camera:
+        try:
+            camera = CameraLoad()
+            print("Camera streaming (USB 3 load as in real use)")
+        except Exception as e:
+            print(f"Camera not available ({e}): running without it")
+    compass = None
+    if not args.no_compass and getattr(C, "COMPASS_ENABLED", True):
+        try:
+            compass = CM.Compass(getattr(C, "COMPASS_BUS", 7),
+                                 getattr(C, "COMPASS_CAL_FILE", C.BASE / "scripts" / "compass_cal.json"),
+                                 getattr(C, "COMPASS_FLIP", True), getattr(C, "COMPASS_MOUNT_DEG", 90.0),
+                                 getattr(C, "COMPASS_DECLINATION_DEG", 0.0))
+            inf = compass.info()
+            print(f"Compass: {inf['chip']}, calibrated={inf['calibrated']}, mount={inf['mount_deg']}, flip={inf['flip']}")
+        except Exception as e:
+            print(f"Compass not available ({e}): running without it")
+    lab = Lab(gps, camera, compass)
+    srv = ThreadingHTTPServer(("0.0.0.0", args.port), make_handler(lab))
+    srv.daemon_threads = True
+    for ip in local_ips():
+        print(f"GPS lab: http://{ip}:{args.port}")
+    print(f"Session folder: {lab.session}")
+
+    def stop(*_):
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        srv.serve_forever()
+    finally:
+        if lab.test:
+            lab.finish()
+        lab._stop_pico()
+        if camera:
+            camera.stop()
+        if compass:
+            compass.close()
+        gps.close()
+        print("GPS lab stopped")
+
+
+if __name__ == "__main__":
+    main()
