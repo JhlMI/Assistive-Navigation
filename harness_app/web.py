@@ -37,6 +37,7 @@ class SharedState:
         self.snapshots = 0
         self.web_clients = 0          # browsers currently receiving /video (they cost CPU)
         self.gps = None               # gps.Gps or None
+        self.geonav = None            # geonav.GeoNav or None (filtered position + compass heading)
 
     def update(self, frame, walkable, boxes, result, data):
         with self.lock:
@@ -204,7 +205,8 @@ function draw(){
 async function poll(){
  try{tr=await (await fetch('/gps/track')).json();
   const b=document.getElementById('t');b.textContent=tr.testing?'\u25CF Stop test':'Start test';b.style.background=tr.testing?'#c22':'#2a7';
-  const keys=['gps_fix','gps_sats','gps_sats_view','gps_cn0_top4','gps_hdop','gps_speed_kmh','spread_m','file'];
+  const keys=['gps_fix','gps_sats','gps_sats_view','gps_cn0_top4','gps_hdop','gps_speed_kmh','spread_m','file',
+   'heading_deg','compass_b_ut','nav_sigma_m','nav_speed_kmh','nav_still','nav_rejected'];
   document.getElementById('st').innerHTML=keys.map(k=>`<div>${k}: <b>${tr[k]??'-'}</b></div>`).join('');
   draw();sky();}catch(e){document.getElementById('msg').textContent='no connection';}
 }
@@ -267,6 +269,11 @@ def start_server(state):
             elif url.path == "/gps/track":
                 body = state.gps.track() if state.gps else {"points": [], "marks": [], "testing": False,
                                                             "gps_fix": "GPS not connected"}
+                if state.geonav is not None:
+                    try:
+                        body.update(state.geonav.status())
+                    except Exception:
+                        pass
                 self._send(json.dumps(body).encode(), "application/json")
             elif self.path == "/clean":
                 self._send(CLEAN_PAGE.encode(), "text/html; charset=utf-8")

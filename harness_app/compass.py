@@ -160,7 +160,12 @@ class Compass:
                 return {"compass_deg": None, "compass_b_ut": None, "mag_x": None, "mag_y": None, "mag_z": None}
             x, y, z = self._raw
             h = circ_mean(self._hist)
-        return {"compass_deg": round(h, 1), "compass_b_ut": round(math.sqrt(x * x + y * y + z * z), 2),
+            cal = self.cal
+        if cal:   # calibrated horizontal field: constant (~20-23 uT in La Paz) if the calibration holds
+            bh = math.hypot((x - cal["offset"][0]) * cal["scale"][0], (y - cal["offset"][1]) * cal["scale"][1])
+        else:     # raw total field (includes the hard-iron offset: varies with heading)
+            bh = math.sqrt(x * x + y * y + z * z)
+        return {"compass_deg": round(h, 1), "compass_b_ut": round(bh, 2),
                 "mag_x": round(x, 2), "mag_y": round(y, 2), "mag_z": round(z, 2)}
 
     def _save(self):

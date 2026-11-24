@@ -12,6 +12,7 @@ Usage:
     python main.py --record              # start recording right away (also from the web button)
     python main.py --video rec_X.avi --loop   # demo: replay a street video forever, motors respond live
     python main.py --no-gps              # without the GPS module
+    python main.py --no-compass          # without the compass (I2C)
 """
 import argparse
 import os
@@ -39,6 +40,7 @@ def main():
     ap.add_argument("--record", action="store_true", help="save the camera video for later replay")
     ap.add_argument("--loop", action="store_true", help="with --video: restart the video when it ends (demos)")
     ap.add_argument("--no-gps", action="store_true")
+    ap.add_argument("--no-compass", action="store_true")
     args = ap.parse_args()
 
     running = [True]
@@ -64,6 +66,20 @@ def main():
             print(f"GPS: {gps.port} at {gps.baud} baud")
         except Exception as e:
             print(f"GPS not available ({e}); continuing without GPS")
+
+    # ---- Compass + filtered position (GeoNav) -------------------------------------
+    from geonav import GeoNav, NAV_FIELDS, make_compass
+    compass = None
+    if not args.no_compass:
+        try:
+            compass = make_compass()
+            if compass:
+                inf = compass.info()
+                print(f"Compass: {inf['chip']}, calibrated={inf['calibrated']}, "
+                      f"mount={inf['mount_deg']}, flip={inf['flip']}")
+        except Exception as e:
+            print(f"Compass not available ({e}); continuing without compass")
+    geonav = GeoNav(gps, compass) if (gps or compass) else None
 
     # ---- Models and camera ----------------------------------------------------
     print("Loading TensorRT models...")
@@ -100,6 +116,7 @@ def main():
         state = SharedState()
         state.recording = args.record
         state.gps = gps
+        state.geonav = geonav
         server = start_server(state)
         print(f"Web view: http://<jetson-ip>:{C.WEB_PORT}")
 
@@ -213,6 +230,11 @@ def main():
             gps_st = {"gps_fix": f"error: {e}"}
         row.update({k: gps_st.get(k) for k in ("gps_fix", "gps_sats", "gps_sats_view", "gps_cn0_top4", "gps_hdop", "gps_lat", "gps_lon",
                                                 "gps_speed_kmh", "gps_course")})
+        try:
+            nav_st = geonav.status() if geonav else {}
+        except Exception as e:                      # same rule as the GPS
+            nav_st = {}
+        row.update({k: nav_st.get(k) for k in NAV_FIELDS})
         log.write(row)
 
         # Annotated recording: only frames processed with guidance ON
@@ -239,7 +261,8 @@ def main():
                     "cam_fps": row["cam_fps"], "exposure_ms": row["exp_ms"], "web_clients": row["web_clients"],
                     "guidance": "ON" if guidance else "OFF",
                     "recording": state.rec_info, "photos": state.snapshots, "warning": warning,
-                    **({k: v for k, v in gps_st.items() if k not in ("gps_course", "gps_sats_signal")} if gps else {"gps_fix": "off"})}
+                    **({k: v for k, v in gps_st.items() if k not in ("gps_course", "gps_sats_signal")} if gps else {"gps_fix": "off"}),
+                    **{k: nav_st.get(k) for k in ("heading_deg", "nav_sigma_m", "nav_still")}}
             state.update(frame, walkable, boxes, res, data)
 
         if t1 - t_print >= 2.0:
@@ -255,6 +278,8 @@ def main():
     if pico:
         pico.close()                # leaves the motors silent
     source.stop()
+    if geonav:
+        geonav.close()              # also closes the compass
     if gps:
         gps.close()
     if recorder:
