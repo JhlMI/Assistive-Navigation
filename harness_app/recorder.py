@@ -8,6 +8,11 @@ AnnotatedRecorder  what the system perceived and decided, frame by frame: sidewa
                    IPM path, bird's-eye panel, command and a status line. Only frames processed
                    with guidance ON are written. Frames are re-timed to a constant FPS from their
                    timestamps, so the file plays at real speed in any player (evidence videos).
+                   Status lines at the bottom: vision (FPS, latency, command) and GPS/route.
+
+Recording modes (web button, or REC_MODE in config.py):
+  raw  only rec_*.mp4: the camera as it is, for evidence and to re-run new algorithms.
+  ann  rec_*.mp4 + ann_*.mp4 (same stamp): also the annotated video (guidance ON frames).
 """
 import queue
 import threading
@@ -84,7 +89,8 @@ class AnnotatedRecorder:
     def __init__(self, fps=15, size=(960, 540), stamp=None):
         C.LOG_DIR.mkdir(parents=True, exist_ok=True)
         stamp = stamp or f"{datetime.now():%Y%m%d_%H%M%S}"
-        self.path = C.LOG_DIR / f"ann_{stamp}.avi"      # same stamp as the raw rec_*.avi
+        self.stem = f"ann_{stamp}"                       # same stamp as the raw rec_* file
+        self.path = None
         self.fps = fps
         self.size = size                                 # camera part; the BEV panel is added to the right
         self._writer = None                              # opened on the first frame (its width depends on the mode)
@@ -103,11 +109,16 @@ class AnnotatedRecorder:
             self.dropped += 1
 
     def _status_bar(self, img, info):
+        """info: one line or a list of lines (e.g. vision + GPS), drawn at the bottom."""
+        lines = [info] if isinstance(info, str) else [l for l in info if l]
         h, w = img.shape[0], self.size[0]          # over the camera part only (keeps the BEV panel clear)
+        top = h - 22 * len(lines) - 6
         bar = img.copy()
-        cv2.rectangle(bar, (0, h - 28), (w, h), (0, 0, 0), -1)
+        cv2.rectangle(bar, (0, top), (w, h), (0, 0, 0), -1)
         cv2.addWeighted(bar, 0.75, img, 0.25, 0, img)
-        cv2.putText(img, info, (8, h - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (235, 235, 235), 1, cv2.LINE_AA)
+        for k, line in enumerate(lines):
+            cv2.putText(img, line, (8, top + 18 + 22 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (235, 235, 235), 1, cv2.LINE_AA)
         return img
 
     def _loop(self):
@@ -122,8 +133,7 @@ class AnnotatedRecorder:
             img = self._status_bar(annotate(frame, walkable, boxes, res, self.size), info)
             if self._writer is None:
                 h, w = img.shape[:2]
-                self._writer = cv2.VideoWriter(str(self.path), cv2.VideoWriter_fourcc(*"MJPG"),
-                                               self.fps, (w, h))
+                self._writer, self.path = open_writer(self.stem, self.fps, (w, h), C.REC_CODEC)
             if next_t is None or t - next_t > 1.0:
                 next_t = t                               # first frame, or guidance was off: skip the gap
             # Constant FPS: repeat the frame for every slot it covers (or skip it if it is early)

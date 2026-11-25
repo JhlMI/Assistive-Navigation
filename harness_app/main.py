@@ -30,6 +30,21 @@ from logger import CsvLogger
 from perception import Perception
 
 
+def gps_line(gps_st, nav_st, route_st, chest):
+    """Second status line of the annotated video: GPS quality, heading and route cue."""
+    if not gps_st:
+        return "GPS: no conectado"
+    def v(d, k, fmt="{}"):
+        x = d.get(k)
+        return "-" if x is None else fmt.format(x)
+    txt = (f"GPS {v(gps_st, 'gps_fix')} | sat {v(gps_st, 'gps_sats')} | C/N0 {v(gps_st, 'gps_cn0_top4', '{:.0f}')} dB-Hz | "
+           f"HDOP {v(gps_st, 'gps_hdop')} | sigma {v(nav_st, 'nav_sigma_m', '{:.1f}')} m | "
+           f"rumbo {v(nav_st, 'heading_deg', '{:.0f}')} deg")
+    if route_st.get("route"):
+        txt += f" | ruta: {route_st.get('cue') or '-'} {v(route_st, 'wp_dist_m', '{:.0f}')} m | pecho N,{chest}"
+    return txt
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--video", help="use a video file instead of the camera")
@@ -155,10 +170,11 @@ def main():
         want_rec = state.recording if state is not None else args.record
         if want_rec and recorder is None:
             recorder = Recorder(fps=15)
-            if C.REC_ANNOTATED:
+            rec_mode = state.rec_mode if state is not None else ("ann" if C.REC_ANNOTATED else "raw")
+            if rec_mode == "ann":
                 recorder_ann = AnnotatedRecorder(fps=C.REC_ANNOTATED_FPS, size=C.REC_ANNOTATED_SIZE,
                                                  stamp=recorder.path.stem[len("rec_"):])
-                print(f"Recording: {recorder.path} + {recorder_ann.path.name} (annotated, guidance ON only)")
+                print(f"Recording: {recorder.path} + {recorder_ann.stem} (annotated, guidance ON only)")
             else:
                 print(f"Recording: {recorder.path} (raw only)")
         elif not want_rec and recorder is not None:
@@ -167,7 +183,7 @@ def main():
                 close_annotated(recorder_ann)
             recorder = recorder_ann = None
         if state is not None:
-            state.rec_info = recorder.path.name if recorder else None
+            state.rec_info = ((recorder.path.name + (" + anotado" if recorder_ann else "")) if recorder else None)
         if recorder:
             recorder.add(frame)
         # Looping demo video: restart the filters so the end of the clip does not leak into its start
@@ -259,9 +275,11 @@ def main():
         # Annotated recording: only frames processed with guidance ON
         if recorder_ann is not None and guidance:
             bat_txt = f"{vbat:.2f} V" if vbat else "-"
-            info = (f"{time.strftime('%H:%M:%S')} | FPS {fps:4.1f} | lat {lat_ms:5.1f} ms | "
-                    f"seg {times['seg_ms']:.0f} ms det {times['det_ms']:.0f} ms | "
-                    f"{res.command} ({res.reason}) | bat {bat_txt}")
+            cap_txt = f" (captura {cap_ms:.0f} ms)" if cap_ms is not None else ""
+            info = [f"{time.strftime('%H:%M:%S')} | FPS {fps:4.1f} | lat {lat_ms:5.1f} ms{cap_txt} | "
+                    f"seg {times['seg_ms']:.0f} det {times['det_ms']:.0f} plan {times.get('plan_ms', 0):.0f} ms | "
+                    f"{res.command} ({res.reason}) | bat {bat_txt}",
+                    gps_line(gps_st, nav_st, route_st, chest)]
             recorder_ann.add(time.monotonic(), frame, walkable, boxes, res, info)
 
         if state is not None:

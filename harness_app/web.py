@@ -35,6 +35,7 @@ class SharedState:
         self.data = {}
         self.guidance = True          # toggled from the web page
         self.recording = False        # toggled from the web page (main loop opens/closes the file)
+        self.rec_mode = "ann" if getattr(C, "REC_ANNOTATED", False) else getattr(C, "REC_MODE", "raw")
         self.rec_info = None          # name of the current recording, set by the main loop
         self.snapshots = 0
         self.web_clients = 0          # browsers currently receiving /video (they cost CPU)
@@ -128,6 +129,7 @@ grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px}
 <img src="/video">
 <div id="b">
  <button id="g" onclick="toggle('guidance')">Guidance: ...</button>
+ <button id="m" onclick="mode()">Modo: ...</button>
  <button id="r" onclick="toggle('recording')">Recording: ...</button>
  <button id="p" onclick="photo()" style="background:#357">Take photo</button>
  <a href="/calib" target="_blank"><button style="background:#753">IPM calibration</button></a>
@@ -143,11 +145,14 @@ async function f(){
  document.getElementById('s').innerHTML=Object.entries(d).map(
   ([k,v])=>`<div class="${k=='warning'&&v?'w':''}">${k}: <b>${v??'-'}</b></div>`).join('');}catch(e){}
 }
-let st={guidance:true,recording:false};
+let st={guidance:true,recording:false,rec_mode:'raw'};
 function paint(){
  const g=document.getElementById('g'),r=document.getElementById('r');
  g.textContent='Guidance: '+(st.guidance?'ON':'OFF (camera only)');g.style.background=st.guidance?'#2a7':'#a33';
- r.textContent=st.recording?'\u25CF REC (tap to stop)':'Recording: OFF';r.style.background=st.recording?'#c22':'#555';}
+ r.textContent=st.recording?'\u25CF REC (tap to stop)':'Recording: OFF';r.style.background=st.recording?'#c22':'#555';
+ const m=document.getElementById('m');m.textContent=st.rec_mode=='ann'?'Modo: inferencia + IPM':'Modo: solo video raw';
+ m.style.background=st.recording?'#333':(st.rec_mode=='ann'?'#a5a':'#558');m.disabled=st.recording;}
+async function mode(){if(st.recording)return;const r=await fetch('/toggle?rec_mode='+(st.rec_mode=='ann'?'raw':'ann'),{method:'POST'});st=await r.json();paint();}
 async function toggle(k){const r=await fetch('/toggle?'+k+'='+(st[k]?0:1),{method:'POST'});st=await r.json();paint();}
 async function sync(){try{st=await (await fetch('/toggle')).json();paint();}catch(e){}}
 async function photo(){const r=await (await fetch('/photo',{method:'POST'})).json();
@@ -239,7 +244,8 @@ def start_server(state):
     calib = CalibSession(lambda: state.frame, save_photos=True)
 
     def toggles():
-        return json.dumps({"guidance": state.guidance, "recording": state.recording}).encode()
+        return json.dumps({"guidance": state.guidance, "recording": state.recording,
+                           "rec_mode": state.rec_mode}).encode()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -327,6 +333,8 @@ def start_server(state):
                 if "guidance" in q:
                     state.guidance = q["guidance"][0] == "1"
                     print(f"Guidance {'ON' if state.guidance else 'OFF'} (from web)")
+                if "rec_mode" in q and q["rec_mode"][0] in ("raw", "ann") and not state.recording:
+                    state.rec_mode = q["rec_mode"][0]      # only while not recording
                 if "recording" in q:
                     state.recording = q["recording"][0] == "1"
                 self._send(toggles(), "application/json")

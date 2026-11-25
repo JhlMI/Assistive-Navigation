@@ -39,7 +39,7 @@ class Pico:
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._write(f"T,{C.PICO_TIMEOUT_MS}")
-        self._write(f"K,{getattr(C, 'CHEST_DUTY', 60.0):.1f}")
+        self._write(f"K,{getattr(C, 'CHEST_DUTY', 80.0):.1f}")
         self._thread.start()
 
     @staticmethod

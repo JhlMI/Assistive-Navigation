@@ -51,3 +51,6 @@ data/
 
 # ── Pico firmware build ──
 harness_pico/build/
+*.zip
+maps/lapaz_walk_overpass.json
+nohup.out
