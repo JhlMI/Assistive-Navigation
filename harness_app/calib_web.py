@@ -54,7 +54,10 @@ let img=new Image(),pts=[],calibrated=false;
 const names=['near-left','near-right','far-right','far-left'];
 function load(){img=new Image();img.onload=async()=>{draw();try{const p=(await (await fetch(B+'/photo')).json()).photo;
  if(p)log.textContent='Photo: '+p+'\\nClick: near-left, near-right, far-right, far-left';}catch(e){}};img.src=B+'/frame.jpg?'+Date.now();}
-function draw(){g.clearRect(0,0,960,540);g.drawImage(img,0,0,960,540);g.fillStyle='#ff0';g.strokeStyle='#ff0';g.font='14px monospace';
+function draw(){g.clearRect(0,0,960,540);g.drawImage(img,0,0,960,540);
+ g.save();g.strokeStyle='#0ff';g.lineWidth=2;g.beginPath();g.moveTo(480,540);g.lineTo(480,470);g.stroke();   // center mark
+ g.beginPath();g.moveTo(472,540);g.lineTo(488,540);g.stroke();g.restore();   // (image center, bottom edge) to align with the tiles
+ g.fillStyle='#ff0';g.strokeStyle='#ff0';g.font='14px monospace';
  pts.forEach((p,i)=>{g.beginPath();g.arc(p[0],p[1],5,0,7);g.fill();g.fillText(names[i],p[0]+8,p[1]-8);});
  if(pts.length==4){g.beginPath();g.moveTo(...pts[0]);pts.slice(1).forEach(p=>g.lineTo(...p));g.closePath();g.stroke();}}
 c.onclick=async e=>{const r=c.getBoundingClientRect(),x=(e.clientX-r.left)*960/r.width,y=(e.clientY-r.top)*540/r.height;

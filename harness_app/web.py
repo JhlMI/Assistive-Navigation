@@ -33,7 +33,7 @@ class SharedState:
         self.result = None
         self.boxes = []
         self.data = {}
-        self.guidance = True          # toggled from the web page
+        self.guidance = getattr(C, "GUIDANCE_AT_START", False)   # toggled from the web page; OFF at start
         self.recording = False        # toggled from the web page (main loop opens/closes the file)
         self.rec_mode = "ann" if getattr(C, "REC_ANNOTATED", False) else getattr(C, "REC_MODE", "raw")
         self.rec_info = None          # name of the current recording, set by the main loop
