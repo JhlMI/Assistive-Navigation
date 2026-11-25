@@ -23,10 +23,12 @@ class Pico:
         if port is None:
             raise RuntimeError("Pico not found (/dev/ttyACM*)")
         self.port = port
-        self._ser = serial.Serial(port, C.PICO_BAUD, timeout=0.05)
+        self._ser = serial.Serial(port, C.PICO_BAUD, timeout=0.005)   # short: a new command must not wait for the read
         self._lock = threading.Lock()
         self._command = "S"
         self._t_command = time.monotonic()    # last time the main loop gave a decision
+        self._t_change = None                 # when the command last changed (not yet written)
+        self.send_delay_ms = None             # command changed -> written to the serial port
         self.stale = False                    # True while forcing S because decisions stopped
         self._sent = None
         self._chest = 0
@@ -59,6 +61,8 @@ class Pico:
     def command(self, letter):
         """Set the current command (F, L, R, X, W or S). Sent immediately if it changed."""
         with self._lock:
+            if letter != self._command:
+                self._t_change = time.monotonic()
             self._command = letter
             self._t_command = time.monotonic()
 
@@ -78,6 +82,10 @@ class Pico:
             if letter != self._sent or chest != self._chest_sent or now - t_sent >= C.PICO_PERIOD_S:
                 self._write(letter)
                 self._write(f"N,{chest}")
+                with self._lock:
+                    if self._t_change is not None and letter == self._command:
+                        self.send_delay_ms = (time.monotonic() - self._t_change) * 1000.0
+                        self._t_change = None
                 self._sent, self._chest_sent, t_sent = letter, chest, now
 
             try:

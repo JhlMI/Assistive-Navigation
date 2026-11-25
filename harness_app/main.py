@@ -195,6 +195,7 @@ def main():
         if pico:
             pico.command(res.command)
         t1 = time.perf_counter()
+        cap_ms = source.age_ms() if hasattr(source, "age_ms") else None   # capture -> command decided
 
         lat_ms = (t1 - t0) * 1000
         dt = t1 - t_prev
@@ -216,6 +217,8 @@ def main():
                 warning = f"CRITICAL BATTERY ({vbat:.2f} V): shut the system down"
 
         row = {"fps": round(fps, 1), "lat_ms": round(lat_ms, 1),
+               "cap_ms": None if cap_ms is None else round(cap_ms, 1),
+               "send_ms": None if not pico or pico.send_delay_ms is None else round(pico.send_delay_ms, 1),
                "seg_ms": round(times["seg_ms"], 1), "det_ms": round(times["det_ms"], 1),
                "plan_ms": round(times.get("plan_ms", 0.0), 1),
                "command": res.command, "reason": res.reason, "error": round(res.error, 3),

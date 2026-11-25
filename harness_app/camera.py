@@ -12,14 +12,17 @@ import cv2
 class _SourceBase:
     def __init__(self):
         self._frame = None
+        self._frame_ts = None
+        self.frame_ts = None            # capture timestamp of the frame last returned by next()
         self._id = 0
         self._cond = threading.Condition()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
-    def _publish(self, frame):
+    def _publish(self, frame, ts=None):
         with self._cond:
             self._frame = frame
+            self._frame_ts = ts
             self._id += 1
             self._cond.notify_all()
 
@@ -29,7 +32,12 @@ class _SourceBase:
             self._cond.wait_for(lambda: self._id != last_id or not self._running, timeout)
             if self._id == last_id:
                 return None, last_id
+            self.frame_ts = self._frame_ts
             return self._frame, self._id
+
+    def age_ms(self, ts=None):
+        """Milliseconds since the frame was captured (None if the source has no timestamps)."""
+        return None
 
     @property
     def active(self):
@@ -102,8 +110,19 @@ class OakCamera(_SourceBase):
                 self.cam_fps = inst if self.cam_fps is None else 0.9 * self.cam_fps + 0.1 * inst
             self._t_last = now
             self._clamp_focus()
-            self._publish(msg.getCvFrame())
+            self._publish(msg.getCvFrame(), msg.getTimestamp())   # host-synced capture time
         self._running = False
+
+    def age_ms(self, ts=None):
+        """Milliseconds from the capture timestamp (DepthAI, synced to the host clock and attached
+        after the ISP) to now."""
+        ts = self.frame_ts if ts is None else ts
+        if ts is None:
+            return None
+        try:
+            return (self._dai.Clock.now() - ts).total_seconds() * 1000.0
+        except Exception:
+            return None
 
     def _clamp_focus(self):
         """In autofocus mode, if the lens leaves focus_range (the camera may ignore the hint),
