@@ -80,6 +80,10 @@ def main():
         except Exception as e:
             print(f"Compass not available ({e}); continuing without compass")
     geonav = GeoNav(gps, compass) if (gps or compass) else None
+    routes = None
+    if geonav:
+        from navroute import RouteManager
+        routes = RouteManager(geonav, gps)
 
     # ---- Models and camera ----------------------------------------------------
     print("Loading TensorRT models...")
@@ -117,6 +121,7 @@ def main():
         state.recording = args.record
         state.gps = gps
         state.geonav = geonav
+        state.route = routes
         server = start_server(state)
         print(f"Web view: http://<jetson-ip>:{C.WEB_PORT}")
 
@@ -235,6 +240,17 @@ def main():
         except Exception as e:                      # same rule as the GPS
             nav_st = {}
         row.update({k: nav_st.get(k) for k in NAV_FIELDS})
+        try:
+            route_st = routes.update() if routes else {}
+        except Exception as e:                      # route guidance must never stop the vision loop
+            route_st = {"cue": None, "cue_text": f"error: {e}"}
+        row.update({k: route_st.get(k) for k in ("route", "wp_i", "wp_type", "wp_dist_m", "wp_rel_deg", "cue")})
+        # chest motors: route cues, only while the guidance is on (stopping the guidance silences everything)
+        from navroute import chest_code
+        chest = chest_code(route_st.get("cue")) if guidance else 0
+        row["chest"] = chest
+        if pico:
+            pico.chest(chest)
         log.write(row)
 
         # Annotated recording: only frames processed with guidance ON
@@ -262,7 +278,8 @@ def main():
                     "guidance": "ON" if guidance else "OFF",
                     "recording": state.rec_info, "photos": state.snapshots, "warning": warning,
                     **({k: v for k, v in gps_st.items() if k not in ("gps_course", "gps_sats_signal")} if gps else {"gps_fix": "off"}),
-                    **{k: nav_st.get(k) for k in ("heading_deg", "nav_sigma_m", "nav_still")}}
+                    **{k: nav_st.get(k) for k in ("heading_deg", "nav_sigma_m", "nav_still")},
+                    **{k: route_st.get(k) for k in ("route", "wp_dist_m", "wp_rel_deg", "cue", "cue_text")}}
             state.update(frame, walkable, boxes, res, data)
 
         if t1 - t_print >= 2.0:

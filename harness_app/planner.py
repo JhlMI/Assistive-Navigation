@@ -265,7 +265,7 @@ class BevPlanner:
         if self.block_alert:
             r.command, r.reason = "X", f"obstacle at {r.obst_dist:.1f} m" if r.obst_dist else "obstacle"
         elif self.nopath_frames >= C.FRAMES_NO_SIDEWALK:
-            r.command, r.reason = "X", "no walkable path"
+            r.command, r.reason = "W", "no walkable path"
         elif short:
             r.command, r.reason = self.direction, "path lost (brief)"
         else:

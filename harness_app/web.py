@@ -15,10 +15,12 @@ import numpy as np
 import config as C
 from calib_web import CalibSession, page as calib_page, save_snapshot
 from planner import render_grid
+import route_web
 
 CMD_COLOR = {"F": (80, 200, 80), "L": (255, 170, 0), "R": (255, 170, 0),
-             "X": (40, 40, 230), "S": (160, 160, 160)}
-CMD_NAME = {"F": "FORWARD", "L": "LEFT", "R": "RIGHT", "X": "STOP", "S": "SILENCE"}
+             "X": (40, 40, 230), "W": (0, 200, 255), "E": (255, 0, 255), "S": (160, 160, 160)}
+CMD_NAME = {"F": "FORWARD", "L": "LEFT", "R": "RIGHT", "X": "STOP", "W": "CAREFUL (no path)",
+            "E": "FAULT", "S": "SILENCE"}
 
 
 class SharedState:
@@ -38,6 +40,7 @@ class SharedState:
         self.web_clients = 0          # browsers currently receiving /video (they cost CPU)
         self.gps = None               # gps.Gps or None
         self.geonav = None            # geonav.GeoNav or None (filtered position + compass heading)
+        self.route = None             # navroute.RouteManager or None (/route page)
 
     def update(self, frame, walkable, boxes, result, data):
         with self.lock:
@@ -130,6 +133,7 @@ grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px}
  <a href="/calib" target="_blank"><button style="background:#753">IPM calibration</button></a>
  <a href="/clean" target="_blank"><button style="background:#456">Clean view (demo)</button></a>
  <a href="/gps" target="_blank"><button style="background:#375">GPS test</button></a>
+ <a href="/route" target="_blank"><button style="background:#a60">Rutas</button></a>
 </div>
 <div id="msg"></div>
 <div id="s"></div>
@@ -264,6 +268,12 @@ def start_server(state):
                     self.send_error(404)
             elif self.path == "/status":
                 self._send(json.dumps(state.snapshot()[4]).encode(), "application/json")
+            elif url.path == "/route" or url.path.startswith("/route/"):
+                out = route_web.handle_get(state.route, url.path, url.query)
+                if out:
+                    self._send(*out)
+                else:
+                    self.send_error(404)
             elif url.path == "/gps":
                 self._send(GPS_PAGE.encode(), "text/html; charset=utf-8")
             elif url.path == "/gps/track":
@@ -320,6 +330,12 @@ def start_server(state):
                 if "recording" in q:
                     state.recording = q["recording"][0] == "1"
                 self._send(toggles(), "application/json")
+            elif url.path.startswith("/route/"):
+                out = route_web.handle_post(state.route, url.path, url.query)
+                if out:
+                    self._send(*out)
+                else:
+                    self.send_error(404)
             elif url.path in ("/gps/test", "/gps/mark"):
                 gps = state.gps
                 if gps is None:

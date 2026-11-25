@@ -1,7 +1,7 @@
 """Direction decision (version without IPM).
 
 1. Close obstacle in the central corridor (person, vehicle...) -> 'X' (stop).
-2. No walkable sidewalk for several frames                     -> 'X'.
+2. No walkable sidewalk for several frames                     -> 'W' (go carefully).
 3. Error = horizontal position of the sidewalk center relative to the image center:
    error < 0 (sidewalk to the left) -> 'L', error > 0 -> 'R', centered -> 'F'.
 
@@ -116,7 +116,7 @@ class Decider:
         if self.obst_alert:
             r.command, r.reason = "X", "obstacle"
         elif self.no_sidewalk_frames >= C.FRAMES_NO_SIDEWALK:
-            r.command, r.reason = "X", "no sidewalk"
+            r.command, r.reason = "W", "no sidewalk"
         elif r.center_x is None:
             r.command, r.reason = self.direction, "no sidewalk (brief)"   # keep the last one
         else:

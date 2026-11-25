@@ -12,7 +12,7 @@ FIELDS = ["t_s", "fps", "lat_ms", "seg_ms", "det_ms", "plan_ms", "command", "rea
           "v_jet", "pico_mode", "tj_c", "cam_fps", "exp_ms", "iso", "rec", "web_clients",
           "gps_fix", "gps_sats", "gps_sats_view", "gps_cn0_top4", "gps_hdop", "gps_lat", "gps_lon", "gps_speed_kmh", "gps_course",
           "nav_lat", "nav_lon", "nav_sigma_m", "nav_speed_kmh", "nav_course", "nav_still", "nav_rejected",
-          "heading_deg", "compass_b_ut"]
+          "heading_deg", "compass_b_ut", "route", "wp_i", "wp_type", "wp_dist_m", "wp_rel_deg", "cue", "chest"]
 
 
 def _tj_path():
