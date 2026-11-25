@@ -34,11 +34,11 @@ PATH_GAP_TOL = 0.30                # allowed gap in the path before it ends
 START_SEARCH = 0.60                # search for walkable cells this far left/right of the body
 PATH_POLY_DEG = 1                  # path center line fit: 1 = straight line (stable heading), 2 = gentle curve
 LOOKAHEAD_Y = 2.0                  # look-ahead point (m from the feet)
-ANGLE_EMA = 0.4
-ANGLE_ENTER = 10.0                 # deg to start correcting
-ANGLE_EXIT = 5.0                   # deg to go back to forward
+ANGLE_EMA = 0.25
+ANGLE_ENTER = 15.0                 # deg to start correcting
+ANGLE_EXIT = 7.0                   # deg to go back to forward
 STOP_ZONE = "bubble"               # "bubble": half-ellipse in front of the body | "corridor": band along the path
-BUBBLE_DEPTH = 1.0                 # how far ahead of the blind-zone edge it reaches (m). 0.5 = ~0.5 s of warning at 1 m/s
+BUBBLE_DEPTH = 0.6                 # how far ahead of the blind-zone edge it reaches (m). 0.5 = ~0.5 s of warning at 1 m/s
 BUBBLE_HALF_WIDTH = 0.45           # half width at its base (m): body (0.30) + 0.15 margin. Wider -> parked cars trigger it
 STOP_RANGE = 1.0                   # corridor mode: obstacle within this distance beyond the blind zone -> stop (m)
 OBST_MARGIN = 0.05                 # extra lateral margin (each side) beyond the body: corridor = +-(0.30 + this) m
@@ -51,7 +51,7 @@ SIDEWALK_MIN_FRAC = 0.03           # less than 3 % sidewalk in the ROI -> "no si
 ENTER_THRESHOLD = 0.25             # |error| to start correcting (0..1)
 EXIT_THRESHOLD = 0.15              # |error| to go back to "forward"
 EMA_ALPHA = 0.3                    # error smoothing
-FRAMES_TO_SWITCH = 3               # consecutive frames needed to change direction
+FRAMES_TO_SWITCH = 6               # consecutive frames needed to change direction
 FORWARD_VIBRATES = True            # False: silence while on track
 
 # Obstacles (COCO classes)
