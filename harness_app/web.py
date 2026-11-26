@@ -19,6 +19,12 @@ import route_web
 
 CMD_COLOR = {"F": (80, 200, 80), "L": (255, 170, 0), "R": (255, 170, 0),
              "X": (40, 40, 230), "W": (0, 200, 255), "E": (255, 0, 255), "S": (160, 160, 160)}
+def _cv_text(img, text, org, scale, color, thickness):
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
+
+
+put_text = _cv_text   # replaced by evidence.py (--lang es) with a renderer that supports accents
+
 CMD_NAME = {"F": "FORWARD", "L": "LEFT", "R": "RIGHT", "X": "STOP", "W": "CAREFUL (no path)",
             "E": "FAULT", "S": "SILENCE"}
 
@@ -96,15 +102,13 @@ def annotate(frame, walkable, boxes, res, size=None):
         color = (0, 0, 255) if (x1, y1, x2, y2) in obst else (255, 120, 0)
         cv2.rectangle(img, (int(x1 * sx), int(y1 * sy)), (int(x2 * sx), int(y2 * sy)), color, 2)
         name = C.OBSTACLE_CLASSES.get(cls, str(cls))
-        cv2.putText(img, f"{name} {score:.2f}", (int(x1 * sx), max(12, int(y1 * sy) - 4)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+        put_text(img, f"{name} {score:.2f}", (int(x1 * sx), max(12, int(y1 * sy) - 4)), 0.45, color, 1)
 
     if res is not None:
         cv2.rectangle(img, (0, 0), (W, 30), (0, 0, 0), -1)
 
         text = f"{CMD_NAME.get(res.command, res.command)}  ({res.reason})"
-        cv2.putText(img, text, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                    CMD_COLOR.get(res.command, (255, 255, 255)), 2, cv2.LINE_AA)
+        put_text(img, text, (8, 21), 0.6, CMD_COLOR.get(res.command, (255, 255, 255)), 2)
     if bev_mode:
         panel = render_grid(res, H)
         if panel is not None:

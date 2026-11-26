@@ -34,6 +34,9 @@ ARRIVE_M = getattr(C, "ROUTE_ARRIVE_M", 12.0)
 CUE_TURN_M = getattr(C, "ROUTE_CUE_TURN_M", 18.0)   # one turn cue from here until the corner is passed
 CUE_HAZARD_M = getattr(C, "ROUTE_CUE_HAZARD_M", 20.0)
 COMBINE_M = 15.0                 # a turn and a hazard closer than this give one combined cue
+TURN_DONE_M = getattr(C, "ROUTE_TURN_DONE_M", 25.0)   # compass check only this close to the corner
+TURN_DONE_DEG = 35.0             # heading within this of the new street (at most half the turn angle)
+TURN_DONE_S = 1.5                # ... for this long -> the turn is done, stop the cue
 OFF_DEG = 50.0
 OFF_HOLD_S = 3.0
 GOOD_HDOP = 2.5
@@ -314,6 +317,11 @@ class RouteManager:
                 f["min_d"][f["i"]] = md
                 reached = d <= ARRIVE_M
                 passed = md <= 2 * ARRIVE_M and d > md + 8.0
+                # Turn done by the compass (2026-11-25): near the corner and already facing the new
+                # street. The GPS alone waited until the distance grew 8 m (up to 45 s of extra cue).
+                if w["turn"] in ("L", "R") and not passed and self._turn_done(f, w, d, heading):
+                    passed = True
+                    self._event(f, "TURN_DONE_COMPASS")
                 if w["turn"] == "END" and reached:
                     f["arrived"] = True
                     out.update(cue="ARRIVED", cue_text="llegaste al destino", wp_i=f["i"], wp_type="END")
@@ -362,6 +370,23 @@ class RouteManager:
             if cue:
                 self._event(f, cue)
             return out
+
+    @staticmethod
+    def _turn_done(f, w, d, heading):
+        """True when the user has faced the new street for TURN_DONE_S near the corner."""
+        h_out = w.get("heading_out")
+        if heading is None or h_out is None or d > TURN_DONE_M:
+            f["align_since"] = None
+            return False
+        tol = min(TURN_DONE_DEG, 0.5 * abs(w.get("angle") or 90.0))
+        if abs(angle_diff(h_out, heading)) <= tol:
+            f["align_since"] = f.get("align_since") or time.monotonic()
+            if time.monotonic() - f["align_since"] >= TURN_DONE_S:
+                f["align_since"] = None
+                return True
+        else:
+            f["align_since"] = None
+        return False
 
     @staticmethod
     def _close_hazard(w, nxt):

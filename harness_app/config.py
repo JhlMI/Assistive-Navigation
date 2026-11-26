@@ -38,8 +38,8 @@ ANGLE_EMA = 0.25
 ANGLE_ENTER = 15.0                 # deg to start correcting
 ANGLE_EXIT = 7.0                   # deg to go back to forward
 STOP_ZONE = "bubble"               # "bubble": half-ellipse in front of the body | "corridor": band along the path
-BUBBLE_DEPTH = 0.6                 # how far ahead of the blind-zone edge it reaches (m). 0.5 = ~0.5 s of warning at 1 m/s
-BUBBLE_HALF_WIDTH = 0.45           # half width at its base (m): body (0.30) + 0.15 margin. Wider -> parked cars trigger it
+BUBBLE_DEPTH = 0.3                 # how far ahead of the blind-zone edge it reaches (m). 0.5 = ~0.5 s of warning at 1 m/s
+BUBBLE_HALF_WIDTH = 0.40           # half width at its base (m): body (0.30) + 0.15 margin. Wider -> parked cars trigger it
 STOP_RANGE = 1.0                   # corridor mode: obstacle within this distance beyond the blind zone -> stop (m)
 OBST_MARGIN = 0.05                 # extra lateral margin (each side) beyond the body: corridor = +-(0.30 + this) m
 OBST_DEPTH = 0.40                  # assumed depth of a detected obstacle behind its visible bottom edge (m)
@@ -59,7 +59,7 @@ OBSTACLE_CLASSES = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bu
 CORRIDOR = (0.30, 0.70)            # central band of the image width
 OBST_Y2_MIN = 0.80                 # box bottom below 80 % of the height
 OBST_HEIGHT_MIN = 0.45             # or box taller than 45 % of the image
-FRAMES_OBST_ON = 2                 # consecutive frames to trigger the alert
+FRAMES_OBST_ON = 3                 # consecutive frames to trigger the alert
 FRAMES_OBST_OFF = 5                # clear frames to release it
 FRAMES_NO_SIDEWALK = 10            # consecutive frames without sidewalk to alert
 
