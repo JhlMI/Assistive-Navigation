@@ -38,8 +38,8 @@ ANGLE_EMA = 0.4
 ANGLE_ENTER = 10.0                 # deg to start correcting
 ANGLE_EXIT = 5.0                   # deg to go back to forward
 STOP_ZONE = "bubble"               # "bubble": half-ellipse in front of the body | "corridor": band along the path
-BUBBLE_DEPTH = 0.3                 # how far ahead of the blind-zone edge it reaches (m). 0.5 = ~0.5 s of warning at 1 m/s
-BUBBLE_HALF_WIDTH = 0.40           # half width at its base (m): body (0.30) + 0.15 margin. Wider -> parked cars trigger it
+BUBBLE_DEPTH = 0.25                 # how far ahead of the blind-zone edge it reaches (m). 0.5 = ~0.5 s of warning at 1 m/s
+BUBBLE_HALF_WIDTH = 0.28           # half width at its base (m): body (0.30) + 0.15 margin. Wider -> parked cars trigger it
 STOP_RANGE = 1.0                   # corridor mode: obstacle within this distance beyond the blind zone -> stop (m)
 OBST_MARGIN = 0.05                 # extra lateral margin (each side) beyond the body: corridor = +-(0.30 + this) m
 OBST_DEPTH = 0.40                  # assumed depth of a detected obstacle behind its visible bottom edge (m)
@@ -93,3 +93,4 @@ REC_CODEC = "mp4v"                 # raw recording: "mp4v" (~7-15 MB/min) or "mj
 REC_ANNOTATED = False              # True: the Recording button also saves ann_*.avi (overlays, evidence)
 REC_ANNOTATED_SIZE = (960, 540)    # camera part of the annotated video (the BEV panel is added beside it)
 REC_ANNOTATED_FPS = 15
+ROUTE_CUE_TURN_M = 12.0           # route turn cue starts at this GPS distance (m)
