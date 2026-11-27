@@ -54,3 +54,7 @@ harness_pico/build/
 *.zip
 maps/lapaz_walk_overpass.json
 nohup.out
+logs/**/*.mp4
+logs/**/*.avi
+logs/navigation/*.csv
+*.tgz

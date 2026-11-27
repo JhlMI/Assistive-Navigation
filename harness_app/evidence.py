@@ -51,9 +51,13 @@ LANG = "es"
 def tr_reason(reason):
     if LANG != "es":
         return reason
-    m = re.match(r"obstacle at ([\d.]+) m", reason or "")
+    reason = reason or ""
+    m = re.match(r"obstacle at ([\d.]+) m", reason)
     if m:
         return f"obstáculo a {float(m.group(1)):.1f} m".replace(".", ",")
+    m = re.match(r"(.+?) \(([+-]?\d+) deg\)$", reason)          # e.g. "on path (+3 deg)"
+    if m:
+        return f"{ES_REASONS.get(m.group(1), m.group(1))}, {m.group(2)}°"
     return ES_REASONS.get(reason, reason)
 
 
@@ -243,8 +247,10 @@ def main():
                      f"segmentación {f1(row['seg_ms'])} ms | detección {f1(row['det_ms'])} ms | "
                      f"planificador {f1(row['plan_ms'])} ms | acera {f1(row['sidewalk_pct'])} % | "
                      f"objetos {row['n_boxes']} | "
-                     + (f"ruta {f1(row['path_len_m'])} m | ángulo {f1(row['angle_deg'])}° | "
-                        f"obstáculo {f1(row['obstacle_m'])} m" if use_bev else f"error {res.error:+.2f}")]
+                     + ((f"ruta {f1(row['path_len_m'])} m | ángulo {f1(row['angle_deg'])}° | "
+                         + (f"obstáculo a {f1(row['obstacle_m'])} m" if row['obstacle_m'] is not None
+                            else "sin obstáculo en la zona"))
+                        if use_bev else f"error {res.error:+.2f}")]
         else:
             lines = [f"{name}   ->   {res.command}  ({res.reason})",
                      f"seg {row['seg_ms']} ms | det {row['det_ms']} ms | plan {row['plan_ms']} ms | "
